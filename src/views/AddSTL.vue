@@ -3,11 +3,12 @@ import MonthYearInput from "../components/MonthYearInput.vue";
 import TextArea from "../components/TextArea.vue";
 import TextInput from "../components/TextInput.vue";
 import TagInput from "../components/TagInput.vue";
-import { Ref, ref } from "vue";
-import {fileLogos, FileMeta, StlModel} from "../types.ts";
+import {onMounted, Ref, ref} from "vue";
+import { FileContext, fileLogos, StlModel } from "../types.ts";
 import { invoke } from "@tauri-apps/api/core";
 import FileInput from "../components/FileInput.vue";
 import ModalView from "../components/ModalView.vue";
+import {listen} from "@tauri-apps/api/event";
 
 const model: Ref<StlModel> = ref({
   modelName: "",
@@ -16,19 +17,113 @@ const model: Ref<StlModel> = ref({
   release: "",
   description: "",
   tags: [],
-  pictures: [],
+  images: [],
   modelFiles: [],
 });
+const images = ref<FileContext[]>([]);
+const modelFiles = ref<FileContext[]>([]);
 
 const imagePreviews = ref<string[]>([]);
 const selectedImageIndex = ref(0);
+const scratchDir = ref<string | null>(null); // TODO: Implement scratchDir option for user
+const storageProgress = ref(0);
+const totalFiles = ref(0);
+const processedFiles = ref(0);
 
-const saveModelData = async () => {
-  await invoke("save_model", model.value);
-  alert("Model saved successfully!"); // FIXME: Show a toast message instead
+const storeFiles = async (
+  images: FileContext[],
+  files: FileContext[],
+  modelName: string,
+) => {
+  if (!model.value.modelName) {
+    throw new Error("Model name is required for file upload");
+  }
+  totalFiles.value = images.length + files.length;
+  processedFiles.value = 0;
+  storageProgress.value = 0;
 
-  clearModel();
+  const processedImages = [];
+  for (const [imageIndex, image] of images.entries()) {
+    if (image.file) {
+      const fileData = new Uint8Array(await image.file.arrayBuffer());
+      const filePath = await invoke<string>("store_image", {
+        imageData: Array.from(fileData),
+        imageName: image.name,
+        modelName,
+        imageIndex,
+        scratchDir,
+      });
+
+      processedImages.push(filePath);
+      processedFiles.value++;
+      storageProgress.value = processedFiles.value / totalFiles.value;
+    }
+  }
+
+  const processedModelFiles = [];
+  for (const modelFile of files) {
+    if (modelFile.file) {
+      const fileData = new Uint8Array(await modelFile.file.arrayBuffer());
+      const filePath = await invoke("store_model_file", {
+        fileData: Array.from(fileData),
+        fileName: modelFile.name,
+        modelName,
+        scratchDir,
+      });
+      processedModelFiles.push(filePath);
+      processedFiles.value++;
+      storageProgress.value = processedFiles.value / totalFiles.value;
+    }
+  }
+
+  return { processedImages, processedModelFiles };
 };
+
+const isStoring = ref(false);
+const saveModelData = async () => {
+  try {
+    isStoring.value = true;
+    const storedFiles = await storeFiles(
+      images.value,
+      modelFiles.value,
+      model.value.modelName,
+    );
+
+    const modelData = {
+      ...model.value,
+      pictures: storedFiles.processedImages,
+      modelFiles: storedFiles.processedModelFiles,
+    };
+
+    await invoke("save_model", { model: modelData });
+    alert("Model saved successfully!"); // FIXME: Show a toast message instead
+    clearModel();
+  } catch (error) {
+    alert("Failed to save model"); // FIXME: Show a toast message instead
+  } finally {
+    isStoring.value = false;
+  }
+};
+
+const compressionProgress = ref(0);
+const compressedFiles = ref(0);
+const totalCompressedFiles = ref(0);
+const isCompressing = ref(false);
+interface CompressionProgressPayload {
+  percent: number;
+  processed: number;
+  total: number;
+}
+
+onMounted(async () => {
+  await listen<CompressionProgressPayload>("compression_progress", (event) => {
+    const data = event.payload;
+    compressionProgress.value = data.percent;
+    compressedFiles.value = data.processed;
+    totalCompressedFiles.value = data.total;
+    isCompressing.value = data.processed < data.total;
+  });
+});
 
 const clearModel = () => {
   model.value = {
@@ -38,7 +133,7 @@ const clearModel = () => {
     release: "",
     description: "",
     tags: [],
-    pictures: [],
+    images: [],
     modelFiles: [],
   };
   imagePreviews.value = [];
@@ -47,15 +142,14 @@ const clearModel = () => {
 
 const imageDetailViewOpen = ref(false);
 
-const updateImagePreviews = (files: FileMeta[]) => {
-  console.log("I was called!", files);
+const updateImagePreviews = (files: FileContext[]) => {
   imagePreviews.value = files.map((file) => file.path);
 };
 
 const removeImage = (index: number) => {
   // Remove from model.pictures
-  model.value.pictures.splice(index, 1);
-  model.value.pictures = [...model.value.pictures];
+  model.value.images.splice(index, 1);
+  model.value.images = [...model.value.images];
 
   // Remove from imagePreviews
   imagePreviews.value.splice(index, 1);
@@ -72,15 +166,15 @@ const removeImage = (index: number) => {
 };
 
 const getLogo = (fileName: string) => {
-  const ext = fileName.split('.').pop();
-  if (ext === 'stl') {
+  const ext = fileName.split(".").pop();
+  if (ext === "stl") {
     return fileLogos.stl;
-  } else if (ext === 'chitu' || ext === 'chitubox') {
+  } else if (ext === "chitu" || ext === "chitubox") {
     return fileLogos.chitubox;
-  } else if (ext === 'lyt' || ext === 'lys' || ext === 'lychee') {
+  } else if (ext === "lyt" || ext === "lys" || ext === "lychee") {
     return fileLogos.lychee;
   } else {
-    return 'tauri.svg';
+    return "tauri.svg";
   }
 };
 </script>
@@ -117,18 +211,22 @@ const getLogo = (fileName: string) => {
               label="Pictures"
               multiple
               accept=".jpg,.jpeg,.png,.gif,.webp,image/*"
-              v-model="model.pictures"
-              @update:modelValue="updateImagePreviews" />
+              v-model="images"
+              :enabled="model.modelName.length > 0"
+              @update:modelValue="updateImagePreviews"
+          />
 
           <FileInput
               id="model-files"
               label="Model Files"
               multiple
               accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode,.png"
-              v-model="model.modelFiles" />
+              v-model="modelFiles"
+              :enabled="model.modelName.length > 0"
+          />
 
           <ul v-if="model.modelFiles.length > 0" class="list">
-            <li v-for="modelFile in model.modelFiles" :key="modelFile.name" class="list-row">
+            <li v-for="modelFile in modelFiles" :key="modelFile.name" class="list-row">
               <div>
                 <img class="size-8 rounded-box" :src="getLogo(modelFile.name)" alt="File icon" />
               </div>
@@ -136,14 +234,30 @@ const getLogo = (fileName: string) => {
               {{modelFile.name}}
               </div>
               <div>
-                <button class="btn btn-xs btn-error" @click="model.modelFiles.splice(model.modelFiles.indexOf(modelFile), 1)">Remove</button>
+                <button class="btn btn-xs btn-error" @click="model.modelFiles.splice(modelFiles.indexOf(modelFile), 1)">Remove</button>
               </div>
             </li>
           </ul>
 
-          <div class="flex justify-between w-full">
-            <button class="btn" type="submit">Save Model</button>
+          <div class="flex justify-between w-full mb-4">
+            <button class="btn" type="submit" :disabled="isStoring">
+              <template v-if="isStoring">
+                <span class="loading loading-spinner"></span>
+                <span>Storing...</span>
+              </template>
+              <span v-else>Save Model</span>
+            </button>
             <button class="btn btn-error" @click="clearModel">Clear Model</button>
+          </div>
+          <div v-if="isStoring" class="w-full">
+            <h3>Moving files to temporary directory</h3>
+            <progress class="progress w-full" :value="storageProgress" max="100" />
+            <p class="text-sm text-center">Processing files: {{processedFiles}}/{{totalFiles}}</p>
+          </div>
+          <div v-if="isCompressing" class="w-full">
+            <h3>Compressing files</h3>
+            <progress class="progress w-full" :value="compressionProgress" max="100" />
+            <p class="text-sm text-center">Compressing files: {{compressedFiles}}/{{totalCompressedFiles}}</p>
           </div>
         </form>
       </section>

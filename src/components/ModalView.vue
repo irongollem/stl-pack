@@ -1,31 +1,31 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { ref, onMounted, onBeforeUnmount } from "vue";
 
 const props = defineProps<{
   isOpen: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: 'close', value: boolean): void;
+  (e: "close", value: boolean): void;
 }>();
 
 // Add keyboard support to close modal with Escape key
 onMounted(() => {
-  window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener("keydown", handleKeyDown);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeyDown);
+  window.removeEventListener("keydown", handleKeyDown);
 });
 
 const closeModal = () => {
-  console.log('closeModal emitting');
+  console.log("closeModal emitting");
   emit("close", false);
-}
+};
 
 const handleKeyDown = (e: KeyboardEvent) => {
-  if (e.key === 'Escape' && props.isOpen) {
-    console.log('Escape key pressed');
+  if (e.key === "Escape" && props.isOpen) {
+    console.log("Escape key pressed");
     closeModal();
   }
 };

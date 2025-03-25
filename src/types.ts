@@ -5,24 +5,18 @@ export type StlModel = {
   releaseDate?: string; // MM/YYYY
   designer?: string;
   tags: string[];
-  pictures: Picture[];
-  modelFiles: FileMeta[];
+  images: string[];
+  modelFiles: string[];
 };
 
-export type Picture = {
-  name: string;
-  path: string;
-  file: File;
-};
-
-export type FileMeta = {
+export type FileContext = {
   name: string;
   path: string;
   file: File;
 };
 
 export const fileLogos = {
-  chitubox: '/chitubox.jpg',
-  lychee: '/lychee.jpg',
-  stl: '/stl.jpg',
-}
+  chitubox: "/chitubox.jpg",
+  lychee: "/lychee.jpg",
+  stl: "/stl.jpg",
+};
