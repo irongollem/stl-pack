@@ -1,8 +1,28 @@
-# Tauri + Vue + TypeScript
+# stl-pack
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+stl-pack is an opinionated desktop tool for compressing and bundling STL files "the right way". It provides an easy-to-use interface for optimizing your 3D models, ensuring they are efficiently packed and ready for use.
 
-## Recommended IDE Setup
+## Features
+
+- Compress STL files to reduce file size without losing quality.
+- Bundle multiple STL files into a single package.
+- User-friendly interface for easy operation.
+- Supports batch processing of multiple files.
+- Cross-platform support (Windows, macOS, Linux).
+
+## Installation
+
+To install stl-pack, download the latest release from the [releases page](https://github.com/irongollem/stl-pack/releases) and follow the installation instructions for your operating system.
+
+## Usage
+
+1. Open stl-pack.
+2. Add STL files you want to compress or bundle.
+3. Choose your desired compression settings.
+4. Click the "Compress" or "Bundle" button.
+5. Save the optimized files to your desired location.
+
+## Recommended IDE Setup for Development
 
 - [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
 
@@ -14,3 +34,11 @@ Since TypeScript cannot handle type information for `.vue` imports, they are shi
 2. Reload the VS Code window by running `Developer: Reload Window` from the command palette.
 
 You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/volar/discussions/471).
+
+## Contributing
+
+Contributions are welcome! Please read the [contributing guidelines](CONTRIBUTING.md) first.
+
+## License
+
+At this point we are unsure about the license. We will update this section once we have decided on a license. For now feel free to beta test the software and provide feedback.
