@@ -13,7 +13,6 @@
 
 <script setup lang="ts">
 import { ref, onBeforeUnmount } from "vue";
-import { FileContext } from "../types.ts";
 
 const props = defineProps<{
   id: string;
@@ -29,7 +28,14 @@ const emit = defineEmits<{
 }>();
 
 const objectUrls = ref<string[]>([]);
+export type FileContext = {
+  objectUrl?: string;
+  file: File;
+};
 
+const isImageFile = (file: File): boolean => {
+  return file.type.startsWith('image/');
+};
 const handleFileChange = (e: Event) => {
   const files = (e.target as HTMLInputElement).files;
   if (!files) return;
@@ -39,14 +45,18 @@ const handleFileChange = (e: Event) => {
   );
 
   if (validFiles.length < files.length) {
-    console.warn("Some files are not valid");
+    console.warn("Some files are not valid, these were removed from the selection.");
   }
 
-  const newFiles = validFiles.map((file) => {
-    const objectUrl = URL.createObjectURL(file);
-    objectUrls.value.push(objectUrl);
-    return { name: file.name, path: objectUrl, file };
+  const newFiles: FileContext[] = validFiles.map((file) => {
+    if (isImageFile(file)) {
+      const objectUrl = URL.createObjectURL(file);
+      objectUrls.value.push(objectUrl);
+      return {objectUrl, file};
+    }
+    return {file};
   });
+
   emit("update:modelValue", [...(props.modelValue || []), ...newFiles]);
 };
 

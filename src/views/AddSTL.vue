@@ -1,24 +1,135 @@
+<template>
+  <View>
+    <template #left>
+      <h1 class="text-xl font-bold">Model info</h1>
+      <form @submit.prevent="saveModelData">
+        <TextInput
+            id="model-name"
+            v-model="model.model_name"
+            label="Model Name"
+            placeholder="Enter model name..."
+        />
+
+        <TextArea id="description" placeholder="Enter the description..." label="Description" v-model="model.description" />
+
+        <TagInput id="tags" v-model="model.tags" label="Tags" placeholder="Write tags here..." />
+
+        <FileInput
+            id="pictures"
+            label="Pictures"
+            multiple
+            accept=".jpg,.jpeg,.png,.gif,.webp,image/*"
+            v-model="images"
+            :enabled="model.model_name.length > 0"
+            @update:modelValue="updateImagePreviews"
+        />
+
+        <FileInput
+            id="model-files"
+            label="Model Files"
+            multiple
+            accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode,.png"
+            v-model="modelFiles"
+            :enabled="model.model_name.length > 0"
+        />
+
+        <ul v-if="model.model_files.length > 0" class="list">
+          <li v-for="modelFile in modelFiles" :key="modelFile.file.name" class="list-row">
+            <div>
+              <img class="size-8 rounded-box" :src="getLogo(modelFile.file.name)" alt="File icon" />
+            </div>
+            <div>
+              {{modelFile.file.name}}
+            </div>
+            <div>
+              <button class="btn btn-xs btn-error" @click="model.model_files.splice(modelFiles.indexOf(modelFile), 1)">Remove</button>
+            </div>
+          </li>
+        </ul>
+
+        <div class="flex justify-between w-full mb-4">
+          <button class="btn" type="submit" :disabled="isStoring">
+            <template v-if="isStoring">
+              <span class="loading loading-spinner"></span>
+              <span>Storing...</span>
+            </template>
+            <span v-else>Save Model</span>
+          </button>
+          <button class="btn btn-error" @click="clearModel">Clear Model</button>
+        </div>
+        <div v-if="isStoring" class="w-full">
+          <h3>Moving files to temporary directory</h3>
+          <progress class="progress w-full" :value="storageProgress" max="100" />
+          <p class="text-sm text-center">Processing files: {{processedFiles}}/{{totalFiles}}</p>
+        </div>
+        <div v-if="isCompressing" class="w-full">
+          <h3>Compressing files</h3>
+          <progress class="progress w-full" :value="compressionProgress" max="100" />
+          <p class="text-sm text-center">Compressing files: {{compressedFiles}}/{{totalCompressedFiles}}</p>
+        </div>
+      </form>
+    </template>
+
+    <template v-if="imagePreviews.length" #right>
+      <h2 class="text-xl font-bold">Image Previews</h2>
+      <div class="w-full aspect-square mb-4">
+        <img :src="imagePreviews[selectedImageIndex]"
+             alt="Primary preview"
+             class="w-full h-full object-cover rounded-lg border border-base-300 cursor-pointer hover:border-2 hover:border-primary-500"
+             @click="imageDetailViewOpen = true"
+        />
+      </div>
+      <div class="flex overflow-x-auto gap-4 pb-2 max-w-full flex-shrink-0 overflow-y-hidden">
+        <div
+            v-for="(img, index) in imagePreviews"
+            :key="index"
+            class="relative flex-shrink-0 w-32"
+        >
+          <img
+              :src="img"
+              :alt="`Image ${index + 1}`"
+              class="w-32 h-32 object-cover rounded cursor-pointer"
+              :class="{ 'border-2 border-primary-500': index === selectedImageIndex }"
+              @click="selectedImageIndex = index"
+          />
+          <button
+              @click.stop="removeImage(index)"
+              class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-700 text-sm font-bold"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </template>
+  </View>
+  <ModalView :isOpen="imageDetailViewOpen" @close="imageDetailViewOpen = false">
+    <img
+        :src="imagePreviews[selectedImageIndex]"
+        alt="Full size preview"
+        class="max-w-full max-h-[90vh] object-contain"
+    />
+  </ModalView>
+</template>
+
 <script setup lang="ts">
-import MonthYearInput from "../components/MonthYearInput.vue";
 import TextArea from "../components/TextArea.vue";
 import TextInput from "../components/TextInput.vue";
 import TagInput from "../components/TagInput.vue";
-import {onMounted, Ref, ref} from "vue";
-import { FileContext, fileLogos, StlModel } from "../types.ts";
+import { onMounted, Ref, ref } from "vue";
+import { fileLogos } from "../types.ts";
 import { invoke } from "@tauri-apps/api/core";
-import FileInput from "../components/FileInput.vue";
+import FileInput, {FileContext} from "../components/FileInput.vue";
 import ModalView from "../components/ModalView.vue";
-import {listen} from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import View from "../components/View.vue";
+import {StlModel} from "../bindings.ts";
 
 const model: Ref<StlModel> = ref({
-  modelName: "",
-  releaseDate: "",
-  designer: "",
-  release: "",
+  model_name: "",
   description: "",
   tags: [],
   images: [],
-  modelFiles: [],
+  model_files: [],
 });
 const images = ref<FileContext[]>([]);
 const modelFiles = ref<FileContext[]>([]);
@@ -35,7 +146,7 @@ const storeFiles = async (
   files: FileContext[],
   modelName: string,
 ) => {
-  if (!model.value.modelName) {
+  if (!model.value.model_name) {
     throw new Error("Model name is required for file upload");
   }
   totalFiles.value = images.length + files.length;
@@ -48,7 +159,7 @@ const storeFiles = async (
       const fileData = new Uint8Array(await image.file.arrayBuffer());
       const filePath = await invoke<string>("store_image", {
         imageData: Array.from(fileData),
-        imageName: image.name,
+        imageName: image.file.name,
         modelName,
         imageIndex,
         scratchDir,
@@ -66,7 +177,7 @@ const storeFiles = async (
       const fileData = new Uint8Array(await modelFile.file.arrayBuffer());
       const filePath = await invoke("store_model_file", {
         fileData: Array.from(fileData),
-        fileName: modelFile.name,
+        fileName: modelFile.file.name,
         modelName,
         scratchDir,
       });
@@ -86,7 +197,7 @@ const saveModelData = async () => {
     const storedFiles = await storeFiles(
       images.value,
       modelFiles.value,
-      model.value.modelName,
+      model.value.model_name,
     );
 
     const modelData = {
@@ -126,15 +237,18 @@ onMounted(async () => {
 });
 
 const clearModel = () => {
+  imagePreviews.value.forEach((imageUrl) => {
+    if (imageUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(imageUrl);
+    }
+  });
+
   model.value = {
-    modelName: "",
-    releaseDate: "",
-    designer: "",
-    release: "",
+    model_name: "",
     description: "",
     tags: [],
     images: [],
-    modelFiles: [],
+    model_files: [],
   };
   imagePreviews.value = [];
   selectedImageIndex.value = 0;
@@ -143,15 +257,18 @@ const clearModel = () => {
 const imageDetailViewOpen = ref(false);
 
 const updateImagePreviews = (files: FileContext[]) => {
-  imagePreviews.value = files.map((file) => file.path);
+  imagePreviews.value = files.filter((file) => file.objectUrl).map((file) => file.objectUrl!);
 };
 
 const removeImage = (index: number) => {
-  // Remove from model.pictures
+  const url = imagePreviews.value[index];
+  if (url?.startsWith("blob:")) {
+    URL.revokeObjectURL(url);
+  }
+
   model.value.images.splice(index, 1);
   model.value.images = [...model.value.images];
 
-  // Remove from imagePreviews
   imagePreviews.value.splice(index, 1);
 
   // Adjust selected index if necessary
@@ -178,130 +295,3 @@ const getLogo = (fileName: string) => {
   }
 };
 </script>
-
-<template>
-  <main class="bg-gray-800 h-screen p-16 text-white">
-    <header class="mb-6">
-      <h1 class="text-2xl font-bold">Add STL Model</h1>
-    </header>
-
-    <div class="flex flex-col lg:flex-row gap-8">
-      <section class="lg:w-1/2">
-        <h2 class="text-xl font-bold">Metadata</h2>
-        <form @submit.prevent="saveModelData">
-          <TextInput
-              id="model-name"
-              v-model="model.modelName"
-              label="Model Name"
-              placeholder="Enter model name..."
-          />
-
-          <TextArea id="description" placeholder="Enter the description..." label="Description" v-model="model.description" />
-
-          <TextInput id="designer" label="Designer" placeholder="Name of the designer..." v-model="model.designer" />
-
-          <TextInput id="release" label="Release" placeholder="Name of the release..." v-model="model.release" />
-
-          <MonthYearInput id="releaseDate" label="Release date" v-model="model.releaseDate" />
-
-          <TagInput id="tags" v-model="model.tags" label="Tags" placeholder="Write tags here..." />
-
-          <FileInput
-              id="pictures"
-              label="Pictures"
-              multiple
-              accept=".jpg,.jpeg,.png,.gif,.webp,image/*"
-              v-model="images"
-              :enabled="model.modelName.length > 0"
-              @update:modelValue="updateImagePreviews"
-          />
-
-          <FileInput
-              id="model-files"
-              label="Model Files"
-              multiple
-              accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode,.png"
-              v-model="modelFiles"
-              :enabled="model.modelName.length > 0"
-          />
-
-          <ul v-if="model.modelFiles.length > 0" class="list">
-            <li v-for="modelFile in modelFiles" :key="modelFile.name" class="list-row">
-              <div>
-                <img class="size-8 rounded-box" :src="getLogo(modelFile.name)" alt="File icon" />
-              </div>
-              <div>
-              {{modelFile.name}}
-              </div>
-              <div>
-                <button class="btn btn-xs btn-error" @click="model.modelFiles.splice(modelFiles.indexOf(modelFile), 1)">Remove</button>
-              </div>
-            </li>
-          </ul>
-
-          <div class="flex justify-between w-full mb-4">
-            <button class="btn" type="submit" :disabled="isStoring">
-              <template v-if="isStoring">
-                <span class="loading loading-spinner"></span>
-                <span>Storing...</span>
-              </template>
-              <span v-else>Save Model</span>
-            </button>
-            <button class="btn btn-error" @click="clearModel">Clear Model</button>
-          </div>
-          <div v-if="isStoring" class="w-full">
-            <h3>Moving files to temporary directory</h3>
-            <progress class="progress w-full" :value="storageProgress" max="100" />
-            <p class="text-sm text-center">Processing files: {{processedFiles}}/{{totalFiles}}</p>
-          </div>
-          <div v-if="isCompressing" class="w-full">
-            <h3>Compressing files</h3>
-            <progress class="progress w-full" :value="compressionProgress" max="100" />
-            <p class="text-sm text-center">Compressing files: {{compressedFiles}}/{{totalCompressedFiles}}</p>
-          </div>
-        </form>
-      </section>
-
-      <aside v-if="imagePreviews.length" class="lg:w-1/2">
-        <h2 class="text-xl font-bold">Image Previews</h2>
-        <div class="w-full aspect-square mb-4">
-          <img :src="imagePreviews[selectedImageIndex]"
-               alt="Primary preview"
-               class="w-full h-full object-cover rounded-lg border border-base-300 cursor-pointer hover:border-2 hover:border-primary-500"
-               @click="imageDetailViewOpen = true"
-          />
-        </div>
-        <div class="flex overflow-x-auto gap-4 pb-2 max-w-full flex-shrink-0 overflow-y-hidden">
-          <div
-              v-for="(img, index) in imagePreviews"
-              :key="index"
-              class="relative flex-shrink-0 w-32"
-          >
-            <img
-                :src="img"
-                :alt="`Image ${index + 1}`"
-                class="w-32 h-32 object-cover rounded cursor-pointer"
-                :class="{ 'border-2 border-primary-500': index === selectedImageIndex }"
-                @click="selectedImageIndex = index"
-            />
-            <button
-                @click.stop="removeImage(index)"
-                class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-700 text-sm font-bold"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      </aside>
-    </div>
-
-
-  </main>
-  <ModalView :isOpen="imageDetailViewOpen" @close="imageDetailViewOpen = false">
-    <img
-        :src="imagePreviews[selectedImageIndex]"
-        alt="Full size preview"
-        class="max-w-full max-h-[90vh] object-contain"
-    />
-  </ModalView>
-</template>

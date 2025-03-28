@@ -7,12 +7,12 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "ignore": []
+    "ignore": [ "src/bindings.ts"]
   },
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
-    "ignore": ["node_modules", "**/target/**"]
+    "ignore": ["node_modules", "**/target/**", "src/bindings.ts"]
   },
   "organizeImports": {
     "enabled": true
@@ -22,7 +22,7 @@
     "rules": {
       "recommended": true
     },
-    "ignore": ["node_modules", "**/target/**"]
+    "ignore": ["node_modules", "**/target/**", "src/bindings.ts"]
   },
   "javascript": {
     "formatter": {
