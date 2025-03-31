@@ -1,8 +1,8 @@
 <template>
+  <form @submit.prevent="saveModelData">
   <View>
     <template #left>
       <h1 class="text-xl font-bold">Model info</h1>
-      <form @submit.prevent="saveModelData">
         <TextInput
             id="model-name"
             v-model="model.model_name"
@@ -10,19 +10,9 @@
             placeholder="Enter model name..."
         />
 
-        <TextArea id="description" placeholder="Enter the description..." label="Description" v-model="model.description" />
+        <TextArea id="description" placeholder="Enter the description (Optional)..." label="Description" v-model="model.description" />
 
         <TagInput id="tags" v-model="model.tags" label="Tags" placeholder="Write tags here..." />
-
-        <FileInput
-            id="pictures"
-            label="Pictures"
-            multiple
-            accept=".jpg,.jpeg,.png,.gif,.webp,image/*"
-            v-model="images"
-            :enabled="model.model_name.length > 0"
-            @update:modelValue="updateImagePreviews"
-        />
 
         <FileInput
             id="model-files"
@@ -34,12 +24,12 @@
         />
 
         <ul v-if="model.model_files.length > 0" class="list">
-          <li v-for="modelFile in modelFiles" :key="modelFile.file.name" class="list-row">
+          <li v-for="modelFile in modelFiles" :key="modelFile.name" class="list-row">
             <div>
-              <img class="size-8 rounded-box" :src="getLogo(modelFile.file.name)" alt="File icon" />
+              <img class="size-8 rounded-box" :src="getLogo(modelFile.name)" alt="File icon" />
             </div>
             <div>
-              {{modelFile.file.name}}
+              {{modelFile.name}}
             </div>
             <div>
               <button class="btn btn-xs btn-error" @click="model.model_files.splice(modelFiles.indexOf(modelFile), 1)">Remove</button>
@@ -48,7 +38,7 @@
         </ul>
 
         <div class="flex justify-between w-full mb-4">
-          <button class="btn" type="submit" :disabled="isStoring">
+          <button class="btn btn-primary" type="submit" :disabled="!formComplete || isStoring">
             <template v-if="isStoring">
               <span class="loading loading-spinner"></span>
               <span>Storing...</span>
@@ -67,83 +57,49 @@
           <progress class="progress w-full" :value="compressionProgress" max="100" />
           <p class="text-sm text-center">Compressing files: {{compressedFiles}}/{{totalCompressedFiles}}</p>
         </div>
-      </form>
     </template>
 
-    <template v-if="imagePreviews.length" #right>
-      <h2 class="text-xl font-bold">Image Previews</h2>
-      <div class="w-full aspect-square mb-4">
-        <img :src="imagePreviews[selectedImageIndex]"
-             alt="Primary preview"
-             class="w-full h-full object-cover rounded-lg border border-base-300 cursor-pointer hover:border-2 hover:border-primary-500"
-             @click="imageDetailViewOpen = true"
-        />
-      </div>
-      <div class="flex overflow-x-auto gap-4 pb-2 max-w-full flex-shrink-0 overflow-y-hidden">
-        <div
-            v-for="(img, index) in imagePreviews"
-            :key="index"
-            class="relative flex-shrink-0 w-32"
-        >
-          <img
-              :src="img"
-              :alt="`Image ${index + 1}`"
-              class="w-32 h-32 object-cover rounded cursor-pointer"
-              :class="{ 'border-2 border-primary-500': index === selectedImageIndex }"
-              @click="selectedImageIndex = index"
-          />
-          <button
-              @click.stop="removeImage(index)"
-              class="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-700 text-sm font-bold"
-          >
-            ×
-          </button>
-        </div>
-      </div>
+    <template  #right>
+      <ImagePreview v-model="images" />
     </template>
   </View>
-  <ModalView :isOpen="imageDetailViewOpen" @close="imageDetailViewOpen = false">
-    <img
-        :src="imagePreviews[selectedImageIndex]"
-        alt="Full size preview"
-        class="max-w-full max-h-[90vh] object-contain"
-    />
-  </ModalView>
+  </form>
 </template>
 
 <script setup lang="ts">
 import TextArea from "../components/TextArea.vue";
 import TextInput from "../components/TextInput.vue";
 import TagInput from "../components/TagInput.vue";
-import { onMounted, Ref, ref } from "vue";
+import {computed, onMounted, Ref, ref} from "vue";
 import { fileLogos } from "../types.ts";
-import { invoke } from "@tauri-apps/api/core";
-import FileInput, {FileContext} from "../components/FileInput.vue";
-import ModalView from "../components/ModalView.vue";
+import FileInput from "../components/FileInput.vue";
 import { listen } from "@tauri-apps/api/event";
 import View from "../components/View.vue";
-import {StlModel} from "../bindings.ts";
+import {commands, StlModel} from "../bindings.ts";
+import ImagePreview from "../components/ImagePreview.vue";
+import {useToastStore} from "../stores/toastStore.ts";
+import {useReleasesStore} from "../stores/releasesStore.ts";
 
+const toastStore = useToastStore();
+const releasesStore = useReleasesStore();
 const model: Ref<StlModel> = ref({
   model_name: "",
   description: "",
   tags: [],
   images: [],
   model_files: [],
+  group: null,
 });
-const images = ref<FileContext[]>([]);
-const modelFiles = ref<FileContext[]>([]);
+const images = ref<File[]>([]);
+const modelFiles = ref<File[]>([]);
 
-const imagePreviews = ref<string[]>([]);
-const selectedImageIndex = ref(0);
-const scratchDir = ref<string | null>(null); // TODO: Implement scratchDir option for user
+const isStoring = ref(false);
 const storageProgress = ref(0);
 const totalFiles = ref(0);
 const processedFiles = ref(0);
-
 const storeFiles = async (
-  images: FileContext[],
-  files: FileContext[],
+  images: File[],
+  files: File[],
   modelName: string,
 ) => {
   if (!model.value.model_name) {
@@ -155,43 +111,57 @@ const storeFiles = async (
 
   const processedImages = [];
   for (const [imageIndex, image] of images.entries()) {
-    if (image.file) {
-      const fileData = new Uint8Array(await image.file.arrayBuffer());
-      const filePath = await invoke<string>("store_image", {
-        imageData: Array.from(fileData),
-        imageName: image.file.name,
+    if (image) {
+      const fileData = new Uint8Array(await image.arrayBuffer());
+      const fileBlob = await commands.storeImage(
+       Array.from(fileData),
+        image.name,
         modelName,
         imageIndex,
-        scratchDir,
-      });
-
-      processedImages.push(filePath);
-      processedFiles.value++;
-      storageProgress.value = processedFiles.value / totalFiles.value;
+      );
+      if (fileBlob.status === "ok") {
+        const filePath = fileBlob.data;
+        processedImages.push(filePath);
+        processedFiles.value++;
+        storageProgress.value = processedFiles.value / totalFiles.value;
+      }
     }
   }
 
   const processedModelFiles = [];
-  for (const modelFile of files) {
-    if (modelFile.file) {
-      const fileData = new Uint8Array(await modelFile.file.arrayBuffer());
-      const filePath = await invoke("store_model_file", {
-        fileData: Array.from(fileData),
-        fileName: modelFile.file.name,
+  for (const file of files) {
+      const fileData = new Uint8Array(await file.arrayBuffer());
+      const fileBlob = await commands.storeModelFile(
+        Array.from(fileData),
+        file.name,
         modelName,
-        scratchDir,
-      });
-      processedModelFiles.push(filePath);
-      processedFiles.value++;
-      storageProgress.value = processedFiles.value / totalFiles.value;
-    }
+      );
+      if (fileBlob.status === "ok") {
+        const filePath = fileBlob.data;
+        processedModelFiles.push(filePath);
+        processedFiles.value++;
+        storageProgress.value = processedFiles.value / totalFiles.value;
+      }
   }
 
   return { processedImages, processedModelFiles };
 };
 
-const isStoring = ref(false);
+const formComplete = computed(() =>
+  model.value.model_name &&
+  modelFiles.value.length > 0 &&
+  images.value.length > 0
+);
+
 const saveModelData = async () => {
+  if (!formComplete.value) {
+    toastStore.addToast(
+      "Please make sure the form is complete",
+      "error",
+      0,
+    );
+    return;
+  }
   try {
     isStoring.value = true;
     const storedFiles = await storeFiles(
@@ -200,17 +170,25 @@ const saveModelData = async () => {
       model.value.model_name,
     );
 
-    const modelData = {
+    const modelData: StlModel = {
       ...model.value,
-      pictures: storedFiles.processedImages,
-      modelFiles: storedFiles.processedModelFiles,
+      images: storedFiles.processedImages,
+      model_files: storedFiles.processedModelFiles,
     };
 
-    await invoke("save_model", { model: modelData });
-    alert("Model saved successfully!"); // FIXME: Show a toast message instead
+    await commands.saveModel(modelData);
+    toastStore.addToast(
+      "Model saved successfully",
+      "success",
+    )
+    releasesStore.addModel(modelData);
     clearModel();
   } catch (error) {
-    alert("Failed to save model"); // FIXME: Show a toast message instead
+    toastStore.addToast(
+      "Failed to save model: " + error,
+      "error",
+      0,
+    );
   } finally {
     isStoring.value = false;
   }
@@ -237,12 +215,6 @@ onMounted(async () => {
 });
 
 const clearModel = () => {
-  imagePreviews.value.forEach((imageUrl) => {
-    if (imageUrl?.startsWith("blob:")) {
-      URL.revokeObjectURL(imageUrl);
-    }
-  });
-
   model.value = {
     model_name: "",
     description: "",
@@ -250,36 +222,7 @@ const clearModel = () => {
     images: [],
     model_files: [],
   };
-  imagePreviews.value = [];
-  selectedImageIndex.value = 0;
-};
-
-const imageDetailViewOpen = ref(false);
-
-const updateImagePreviews = (files: FileContext[]) => {
-  imagePreviews.value = files.filter((file) => file.objectUrl).map((file) => file.objectUrl!);
-};
-
-const removeImage = (index: number) => {
-  const url = imagePreviews.value[index];
-  if (url?.startsWith("blob:")) {
-    URL.revokeObjectURL(url);
-  }
-
-  model.value.images.splice(index, 1);
-  model.value.images = [...model.value.images];
-
-  imagePreviews.value.splice(index, 1);
-
-  // Adjust selected index if necessary
-  if (index <= selectedImageIndex.value) {
-    selectedImageIndex.value = Math.max(0, selectedImageIndex.value - 1);
-  }
-
-  // Handle empty state
-  if (imagePreviews.value.length === 0) {
-    selectedImageIndex.value = 0;
-  }
+  images.value = [];
 };
 
 const getLogo = (fileName: string) => {

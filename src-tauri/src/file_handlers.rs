@@ -1,6 +1,7 @@
-use crate::compressors::zip_directory;
+use crate::compressors::compress_dir;
 use crate::image::crop::generate_smart_thumbnail;
-use crate::models::StlModel;
+use crate::models::{CompressionType, Release, StlModel};
+use crate::settings::SETTINGS_CACHE;
 use specta;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,9 +45,10 @@ pub async fn store_image(
     image_name: String,
     model_name: String,
     image_index: u32,
-    scratch_dir: Option<String>,
 ) -> Result<String, String> {
-    let temp_dir = get_storage_dir(&app_handle, scratch_dir, "temp".to_string())?;
+    let settings = SETTINGS_CACHE.lock()
+        .map_err(|e| format!("{}", e))?;
+    let temp_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "temp".to_string())?;
     let clean_model_name = clean_name(&model_name);
 
     let extension = Path::new(&image_name)
@@ -71,9 +73,11 @@ pub async fn store_model_file(
     file_data: Vec<u8>,
     file_name: String,
     model_name: String,
-    scratch_dir: Option<String>,
 ) -> Result<String, String> {
-    let temp_dir = get_storage_dir(&app_handle, scratch_dir, "temp".to_string())?;
+    let settings = SETTINGS_CACHE.lock()
+        .map_err(|e| format!("{}", e))?;
+    let temp_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "temp".to_string())?;
+
     let clean_model_name = clean_name(&model_name);
 
     let new_filename = format!("{}-{}", clean_model_name, file_name);
@@ -87,9 +91,10 @@ pub async fn store_model_file(
 pub async fn save_model(
     app_handle: AppHandle,
     model: StlModel,
-    target_dir: Option<String>,
 ) -> Result<(), String> {
-    let models_dir = get_storage_dir(&app_handle, target_dir, "models".to_string())?;
+    let settings = SETTINGS_CACHE.lock()
+        .map_err(|e| format!("{}", e))?;
+    let models_dir = get_storage_dir(&app_handle, settings.target_dir.clone(), "models".to_string())?;
     let model_dir_name = clean_name(&model.model_name);
     let model_dir = models_dir.join(&model_dir_name);
 
@@ -167,9 +172,63 @@ fn move_model_files_and_images(
     for file in model_files {
         move_file(file, target_dir)?;
     }
+    let settings = SETTINGS_CACHE.lock()
+        .map_err(|e| format!("{}", e))?;
 
-    zip_directory(target_dir, &target_dir.with_extension("zip"), app_handle)
+    compress_dir(
+        target_dir,
+        &target_dir.with_extension("zip"),
+        app_handle,
+        settings.compression_type.clone().unwrap_or(CompressionType::Zip),
+        settings.chunk_size,
+    )
         .map_err(|e| format!("Failed to zip model directory: {}", e))?;
 
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn create_release(
+    app_handle: AppHandle,
+    release: Release,
+) -> Result<(), String> {
+    // create a dir in the scratch_dir for the release that contains a JSON file with the metadata of the release. The models field won't be populated until later through the update fn
+    // the models field will be populated with the model names and the paths to the model files
+    let settings = SETTINGS_CACHE.lock()
+        .map_err(|e| format!("{}", e))?;
+    let release_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "releases".to_string())?;
+    let release_name = clean_name(&release.name);
+    let designer_name = clean_name(&release.designer);
+    let release_date = {
+        let date_parts = release.date.split('/').collect::<Vec<_>>();
+        match date_parts.as_slice() {
+            [month, year] => format!("{:02}-{}", month.parse::<u8>().unwrap_or(1), year),
+            _ => "01-2023".to_string(), // Default if parsing fails
+        }
+    };
+    let release_dir_name = format!("{}-{}-{}", designer_name, release_date, release_name);
+    let release_dir = release_dir.join(&release_dir_name);
+    if release_dir.exists() {
+        fs::remove_dir_all(&release_dir)
+            .map_err(|e| format!("Failed to remove existing release directory: {}", e))?;
+    }
+    fs::create_dir_all(&release_dir)
+        .map_err(|e| format!("Failed to create release directory: {}", e))?;
+    let release_json = serde_json::to_string_pretty(&release)
+        .map_err(|e| format!("Failed to serialize release: {}", e))?;
+    fs::write(&release_dir.join("release.json"), release_json)
+        .map_err(|e| format!("Failed to write release.json: {}", e))?;
+
+    Ok(())
+}
+
+// TODO: Implement the update release function
+#[tauri::command]
+#[specta::specta]
+pub async fn _update_release(
+    _app_handle: AppHandle,
+    _release: Release,
+) {
+
 }

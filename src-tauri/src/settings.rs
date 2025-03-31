@@ -1,14 +1,15 @@
-use crate::models::{CompressionType, Settings};
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Wry};
 use tauri_plugin_store::{Store, StoreExt as _};
+use crate::models::{CompressionType, Settings};
 
-static SETTINGS_CACHE: Lazy<Mutex<Settings>> = Lazy::new(|| {
+pub(crate) static SETTINGS_CACHE: Lazy<Mutex<Settings>> = Lazy::new(|| {
     Mutex::new(Settings {
         scratch_dir: None,
         target_dir: None,
         compression_type: None,
+        chunk_size: None,
     })
 });
 
@@ -42,16 +43,21 @@ pub async fn get_settings(app_handle: AppHandle) -> Result<Settings, String> {
         .and_then(|v| v.as_str().map(String::from))
         .and_then(|s| match s.as_str() {
             "Zip" => Some(CompressionType::Zip),
-            "Tar" => Some(CompressionType::Tar),
+            "7zip" => Some(CompressionType::SevenZip),
             "TarGz" => Some(CompressionType::TarGz),
-            "TarBz2" => Some(CompressionType::TarBz2),
+            "TarXz" => Some(CompressionType::TarXz),
             _ => None,
         });
 
+    let chunk_size = store
+        .get("chunk_size")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     let settings = Settings {
         scratch_dir,
         target_dir,
         compression_type,
+        chunk_size,
     };
 
     {
@@ -90,9 +96,9 @@ pub async fn set_settings(app_handle: AppHandle, settings: Settings) -> Result<(
     if let Some(compression) = &settings.compression_type {
         let compression_str = match compression {
             CompressionType::Zip => "Zip",
-            CompressionType::Tar => "Tar",
+            CompressionType::SevenZip => "7zip",
             CompressionType::TarGz => "TarGz",
-            CompressionType::TarBz2 => "TarBz2",
+            CompressionType::TarXz => "TarXz",
         };
         store.set("compression_type", compression_str);
     }

@@ -31,4 +31,3 @@ specta = "2.0.0-rc.22"
 tauri-specta = {  version = "2.0.0-rc.21", features = ["typescript", "derive"] }
 specta-typescript = "0.0.9"
 tauri-plugin-dialog = "2"
-sevenz-rust = "0.6.1"

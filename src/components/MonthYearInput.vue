@@ -6,7 +6,9 @@
       <select
           v-model="selectedMonth"
           class="select focus:outline-none focus:border-none border-none bg-transparent"
-          @change="updateValue">
+          @change="updateValue"
+          :required="required"
+      >
         <option value="" disabled>Month</option>
         <option v-for="(month, index) in months" :key="index+1" :value="index+1">
           {{ month }}
@@ -16,7 +18,9 @@
       <select
           v-model="selectedYear"
           class="select focus:outline-none focus:border-none border-none bg-transparent"
-          @change="updateValue">
+          @change="updateValue"
+          :required="required"
+      >
         <option value="" disabled>Year</option>
         <option v-for="year in years" :key="year" :value="year">
           {{ year }}
@@ -33,6 +37,7 @@ const props = defineProps<{
   id: string;
   label?: string;
   modelValue?: string;
+  required?: boolean;
 }>();
 
 const emit = defineEmits<{

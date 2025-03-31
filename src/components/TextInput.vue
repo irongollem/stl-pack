@@ -8,6 +8,7 @@
         type="text"
         @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
         :placeholder="placeholder"
+        :required="required"
      />
   </label>
 </template>
@@ -18,6 +19,7 @@ defineProps<{
   label?: string;
   placeholder?: string;
   modelValue?: string;
+  required?: boolean;
 }>();
 
 defineEmits<{

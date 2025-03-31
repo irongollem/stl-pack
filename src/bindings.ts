@@ -5,25 +5,33 @@
 
 
 export const commands = {
-async storeImage(imageData: number[], imageName: string, modelName: string, imageIndex: number, scratchDir: string | null) : Promise<Result<string, string>> {
+async storeImage(imageData: number[], imageName: string, modelName: string, imageIndex: number) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("store_image", { imageData, imageName, modelName, imageIndex, scratchDir }) };
+    return { status: "ok", data: await TAURI_INVOKE("store_image", { imageData, imageName, modelName, imageIndex }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async storeModelFile(fileData: number[], fileName: string, modelName: string, scratchDir: string | null) : Promise<Result<string, string>> {
+async storeModelFile(fileData: number[], fileName: string, modelName: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("store_model_file", { fileData, fileName, modelName, scratchDir }) };
+    return { status: "ok", data: await TAURI_INVOKE("store_model_file", { fileData, fileName, modelName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async saveModel(model: StlModel, targetDir: string | null) : Promise<Result<null, string>> {
+async saveModel(model: StlModel) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_model", { model, targetDir }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_model", { model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async createRelease(release: Release) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("create_release", { release }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -57,9 +65,10 @@ async setSettings(settings: Settings) : Promise<Result<null, string>> {
 
 /** user-defined types **/
 
-export type CompressionType = "Zip" | "Tar" | "TarGz" | "TarBz2"
-export type Settings = { scratch_dir: string | null; target_dir: string | null; compression_type: CompressionType | null }
-export type StlModel = { model_name: string; description: string; tags: string[]; images: string[]; model_files: string[] }
+export type CompressionType = "SevenZip" | "Zip" | "TarGz" | "TarXz"
+export type Release = { name: string; date: string; version: string; designer: string; models: StlModel[]; description: string | null }
+export type Settings = { scratch_dir: string | null; target_dir: string | null; compression_type: CompressionType | null; chunk_size: number | null }
+export type StlModel = { model_name: string; description: string | null; tags: string[]; images: string[]; model_files: string[]; group: string | null }
 
 /** tauri-specta globals **/
 

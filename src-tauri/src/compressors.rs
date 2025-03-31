@@ -1,65 +1,163 @@
 use std::fs;
-use std::fs::File;
-use std::io::{Read, Seek, Write};
-use std::path::Path;
-use tauri::{AppHandle, Emitter};
-use zip::{write::SimpleFileOptions, ZipWriter};
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Emitter, Manager};
+use crate::models::CompressionType;
 
-pub fn zip_directory(
+fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, String> {
+    let resource_path = app_handle.path().resource_dir()
+        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+
+    #[cfg(target_os = "windows")]
+    let binary_path = resource_path.join("win").join("7za.exe");
+
+    #[cfg(target_os = "macos")]
+    let binary_path = resource_path.join("macos").join("7zz");
+
+    #[cfg(target_os = "linux")]
+    let binary_path = resource_path.join("linux").join("7zz");
+
+    // Set executable permissions on Unix systems
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = fs::metadata(&binary_path)
+            .map_err(|e| format!("Failed to get metadata: {}", e))?;
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&binary_path, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+
+    Ok(binary_path)
+}
+
+pub fn compress_dir(
     source_dir: &Path,
-    zip_path: &Path,
+    target_path: &Path,
     app_handle: &AppHandle,
+    compression_type: CompressionType,
+    chunk_size: Option<u32>,
 ) -> Result<(), String> {
+    let binary_path = get_7zip_path(app_handle)?;
+
+    // Count total files for progress reporting
     let mut total_files = 0;
     count_files_in_dir(source_dir, &mut total_files)?;
 
-    let file =
-        File::create(zip_path).map_err(|err| format!("Failed to create zip file: {}", err))?;
+    // Build the command
+    let mut command = std::process::Command::new(&binary_path);
 
-    let mut zip = ZipWriter::new(file);
-    let mut processed_files = 0;
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);  // CREATE_NO_WINDOW
+    }
 
-    app_handle
-        .emit(
-            "compression_progress",
-            serde_json::json!({
-                "processed": processed_files,
-                "total": total_files,
-                "percent": 0,
-            }),
-        )
-        .map_err(|err| format!("Failed to emit progress file: {}", err))?;
+    command
+        .arg("a") // Add files to archive
+        .arg("-mx=9") // Set compression level to maximum
+        .arg("-bs=o"); // Set output stream to stdout
 
-    add_dir_to_zip(
-        &mut zip,
-        source_dir,
-        source_dir,
-        app_handle,
-        &mut processed_files,
-        total_files,
-    )?;
+    // Set format based on compression type
+    match compression_type {
+        CompressionType::Zip => {
+            command.arg("-tzip");
+        },
+        CompressionType::SevenZip => {
+            command.arg("-t7z");
+        },
+        CompressionType::TarGz => {
+            command.arg("-tgzip");
+        },
+        CompressionType::TarXz => {
+            command.arg("-txz");
+        },
+    }
 
-    zip.finish()
-        .map_err(|err| format!("Failed to finish zip file: {}", err))?;
+    // Add split size parameter if needed
+    if let Some(size) = chunk_size {
+        if size > 0 {
+            command.arg(format!("-v{}m", size));
+        }
+    }
 
-    app_handle
-        .emit(
-            "compression_progress",
-            serde_json::json!({
-                "processed": total_files,
-                "total": total_files,
-                "percent": 100,
-            }),
-        )
-        .map_err(|err| format!("Failed to emit progress file: {}", err))?;
+    command
+        .arg(target_path)
+        .arg(format!("{}/*", source_dir.to_string_lossy()));
 
+    let mut child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start 7z: {}", e))?;
+
+    let mut percent = 0;
+    let stdout= if let Some(stdout) = child.stdout.take(){
+        stdout
+    } else {
+        return Err("Failed to get stdout".to_string());
+    };
+
+    let reader = BufReader::new(stdout);
+    let app = app_handle.clone();
+
+    for line_result in reader.lines() {
+        let line = match line_result {
+            Ok(line) => line,
+            Err(_) => continue,
+        };
+
+        if let Some(new_percent) = parse_percentage(&line) {
+            if new_percent != percent {
+                percent = new_percent;
+                let processed = (total_files * percent as u32) / 100;
+                app.emit(
+                    "compression_progress",
+                    serde_json::json!({
+                    "processed": processed,
+                    "total": total_files,
+                    "percent": percent,
+                }),
+                ).map_err(|e| format!("Failed to emit progress: {}", e))?;
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Failed to wait for 7z: {}", e))?;
+
+    if !status.success() {
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let mut error = String::new();
+            let _ = Read::read_to_string(&mut stderr, &mut error);
+            return Err(format!("7z failed: {}", error));
+        }
+        return Err("7z failed with unknown error".to_string());    }
+
+    // Send completion notification
+    app_handle.emit(
+        "compression_progress",
+        serde_json::json!({
+            "processed": total_files,
+            "total": total_files,
+            "percent": 100,
+        }),
+    ).map_err(|e| format!("Failed to emit progress: {}", e))?;
+
+    // Clean up source directory
     fs::remove_dir_all(source_dir)
-        .map_err(|err| format!("Failed to remove source directory: {}", err))?;
+        .map_err(|e| format!("Failed to remove source directory: {}", e))?;
 
     Ok(())
 }
 
-fn count_files_in_dir(dir: &Path, count: &mut usize) -> Result<(), String> {
+fn parse_percentage(line: &str) -> Option<u8> {
+    let pos = line.find('%')?;
+    if pos == 0 { return None; }
+    line[0..pos].trim().parse::<u8>().ok()
+}
+fn count_files_in_dir(dir: &Path, count: &mut u32) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(|err| format!("Failed to read dir: {}", err))? {
         let entry = entry.map_err(|err| format!("Failed to read entry: {}", err))?;
         let path = entry.path();
@@ -70,69 +168,5 @@ fn count_files_in_dir(dir: &Path, count: &mut usize) -> Result<(), String> {
             *count += 1;
         }
     }
-    Ok(())
-}
-
-fn add_dir_to_zip<W: Write + Seek>(
-    zip: &mut ZipWriter<W>,
-    base_path: &Path,
-    dir: &Path,
-    app_handle: &AppHandle,
-    processed_files: &mut usize,
-    total_files: usize,
-) -> Result<(), String> {
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .large_file(true)
-        .unix_permissions(0o755);
-
-    for entry in fs::read_dir(dir).map_err(|err| format!("Failed to read dir: {}", err))? {
-        let entry = entry.map_err(|err| format!("Failed to read entry: {}", err))?;
-        let path = entry.path();
-
-        let relative_path = path
-            .strip_prefix(base_path)
-            .map_err(|err| format!("Failed to strip prefix: {}", err))?;
-        let name = relative_path.to_string_lossy();
-
-        if path.is_dir() {
-            zip.add_directory(name, options)
-                .map_err(|err| format!("Failed to add directory to zip: {}", err))?;
-            add_dir_to_zip(
-                zip,
-                base_path,
-                &path,
-                app_handle,
-                processed_files,
-                total_files,
-            )?;
-        } else {
-            zip.start_file(name, options)
-                .map_err(|err| format!("Failed to start file in zip: {}", err))?;
-            let mut file =
-                File::open(&path).map_err(|err| format!("Failed to open file: {}", err))?;
-            let mut buffer = Vec::new();
-            file.read_to_end(&mut buffer)
-                .map_err(|err| format!("Failed to read file: {}", err))?;
-
-            zip.write_all(&buffer)
-                .map_err(|err| format!("Failed to write file to zip: {}", err))?;
-
-            *processed_files += 1;
-            let percent = (*processed_files as f32 / total_files as f32 * 100.0) as u8;
-
-            app_handle
-                .emit(
-                    "compression_progress",
-                    serde_json::json!({
-                        "processed": *processed_files,
-                        "total": total_files,
-                        "percent": percent,
-                    }),
-                )
-                .map_err(|err| format!("Failed to emit progress file: {}", err))?;
-        }
-    }
-
     Ok(())
 }

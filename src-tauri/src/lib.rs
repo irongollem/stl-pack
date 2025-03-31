@@ -15,6 +15,7 @@ pub fn run() {
         file_handlers::store_image,
         file_handlers::store_model_file,
         file_handlers::save_model,
+        file_handlers::create_release,
         settings::get_settings,
         settings::set_settings,
     ]);
@@ -32,6 +33,7 @@ pub fn run() {
             file_handlers::store_image,
             file_handlers::store_model_file,
             file_handlers::save_model,
+            file_handlers::create_release,
             settings::get_settings,
             settings::set_settings,
         ])
