@@ -1,5 +1,12 @@
 # stl-pack
 
+[![GitHub Release](https://img.shields.io/github/v/release/irongollem/stl-pack?include_prereleases&style=flat-square)](https://github.com/irongollem/stl-pack/releases)
+[![GitHub Issues](https://img.shields.io/github/issues/irongollem/stl-pack?style=flat-square)](https://github.com/irongollem/stl-pack/issues)
+[![GitHub Stars](https://img.shields.io/github/stars/irongollem/stl-pack?style=flat-square)](https://github.com/irongollem/stl-pack/stargazers)
+[![GitHub Downloads](https://img.shields.io/github/downloads/irongollem/stl-pack/total?style=flat-square)](https://github.com/irongollem/stl-pack/releases)
+[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-purple?style=flat-square)](https://tauri.app/)
+
 stl-pack is an opinionated desktop tool for compressing and bundling STL files "the right way". It provides an easy-to-use interface for optimizing your 3D models, ensuring they are efficiently packed and ready for use.
 
 ## Features
@@ -41,4 +48,12 @@ Contributions are welcome! Please read the [contributing guidelines](CONTRIBUTIN
 
 ## License
 
-At this point we are unsure about the license. We will update this section once we have decided on a license. For now feel free to beta test the software and provide feedback.
+This project is available under a custom source-available license that allows:
+- Free usage for personal, educational, and commercial purposes
+- Creating and selling content/bundles made with the software
+
+But prohibits:
+- Selling or redistributing the software itself
+- Creating derivative works based on the software
+
+See [`LICENCE.md`](LICENCE.md) for the complete license terms and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for information about included components.
