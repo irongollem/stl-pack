@@ -1,6 +1,6 @@
 # STL Pack - Custom License
 
-Copyright (c) 2023-2024 STL Pack Contributors
+Copyright (c) 2025 STL Pack Contributors
 
 ## Terms and Conditions
 

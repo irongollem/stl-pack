@@ -2,7 +2,7 @@
 
 [![GitHub Release](https://img.shields.io/github/v/release/irongollem/stl-pack?include_prereleases&style=flat-square)](https://github.com/irongollem/stl-pack/releases)
 [![GitHub Issues](https://img.shields.io/github/issues/irongollem/stl-pack?style=flat-square)](https://github.com/irongollem/stl-pack/issues)
-[![GitHub Stars](https://img.shields.io/github/stars/irongollem/stl-pack?style=flat-square)](https://github.com/irongollem/stl-pack/stargazers)
+[![GitHub Stars](https://img.shields.io/github/stars/irongollem/stl-pack?style=flat-square&cacheSeconds=3600)](https://github.com/irongollem/stl-pack/stargazers)
 [![GitHub Downloads](https://img.shields.io/github/downloads/irongollem/stl-pack/total?style=flat-square)](https://github.com/irongollem/stl-pack/releases)
 [![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 [![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-purple?style=flat-square)](https://tauri.app/)
