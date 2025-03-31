@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "ignore": [ "src/bindings.ts"]
+    "ignore": ["src/bindings.ts"]
   },
   "formatter": {
     "enabled": true,

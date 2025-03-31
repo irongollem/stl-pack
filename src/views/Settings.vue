@@ -36,7 +36,7 @@
 
 <script setup lang="ts">
 import View from "../components/View.vue";
-import {ref, onMounted, watch} from "vue";
+import { ref, onMounted, watch } from "vue";
 import { commands, Settings, CompressionType } from "../bindings.ts";
 import DirInput from "../components/DirInput.vue";
 
@@ -48,10 +48,14 @@ const settings = ref<Settings>({
   chunk_size: null,
 });
 
-watch(settings, async () => {
-  console.log("triggered once again!");
-  await saveSettings();
-}, { deep: true });
+watch(
+  settings,
+  async () => {
+    console.log("triggered once again!");
+    await saveSettings();
+  },
+  { deep: true },
+);
 
 // Load settings on component mount
 onMounted(async () => {
@@ -59,7 +63,8 @@ onMounted(async () => {
     console.log("before: ", settings.value);
     const savedSettings = await commands.getSettings();
     if (savedSettings.status === "ok") {
-      savedSettings.data.compression_type = savedSettings.data.compression_type || "Zip";
+      savedSettings.data.compression_type =
+        savedSettings.data.compression_type || "Zip";
       settings.value = savedSettings.data;
       console.log("saved value", settings.value);
     }
@@ -82,5 +87,10 @@ const saveSettings = async () => {
 };
 
 // Available compression types
-const compressionTypes: CompressionType[] = ["Zip", "SevenZip", "TarGz", "TarXz"];
+const compressionTypes: CompressionType[] = [
+  "Zip",
+  "SevenZip",
+  "TarGz",
+  "TarXz",
+];
 </script>

@@ -80,8 +80,8 @@ const props = defineProps<{
 }>();
 
 const filesStore = ref<Set<File>>(new Set<File>());
-const sortColumn = ref<'name' | 'size' | 'type'>('type');
-const sortDirection = ref<'asc' | 'desc'>('asc');
+const sortColumn = ref<"name" | "size" | "type">("type");
+const sortDirection = ref<"asc" | "desc">("asc");
 
 const emit = defineEmits<{
   (e: "update:modelValue", value: File[]): void;
@@ -89,7 +89,7 @@ const emit = defineEmits<{
 
 // Initialize files from modelValue if provided
 if (props.modelValue) {
-  props.modelValue.forEach(file => filesStore.value.add(file));
+  props.modelValue.forEach((file) => filesStore.value.add(file));
 }
 
 const objectUrls = ref<string[]>([]);
@@ -99,24 +99,24 @@ const sortedFiles = computed(() => {
   return files.sort((a, b) => {
     let compareResult = 0;
 
-    if (sortColumn.value === 'name') {
+    if (sortColumn.value === "name") {
       compareResult = a.name.localeCompare(b.name);
-    } else if (sortColumn.value === 'size') {
+    } else if (sortColumn.value === "size") {
       compareResult = a.size - b.size;
-    } else if (sortColumn.value === 'type') {
+    } else if (sortColumn.value === "type") {
       const typeA = getFileType(a);
       const typeB = getFileType(b);
       compareResult = typeA.localeCompare(typeB);
     }
 
-    return sortDirection.value === 'asc' ? compareResult : -compareResult;
+    return sortDirection.value === "asc" ? compareResult : -compareResult;
   });
 });
 
 const getFileType = (file: File): string => {
   if (file.type) return file.type;
-  const ext = file.name.split('.').pop()?.toLowerCase() || '';
-  return ext ? `.${ext}` : 'Unknown';
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  return ext ? `.${ext}` : "Unknown";
 };
 
 const formatFileSize = (size: number): string => {
@@ -125,12 +125,12 @@ const formatFileSize = (size: number): string => {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-const changeSorting = (column: 'name' | 'size' | 'type') => {
+const changeSorting = (column: "name" | "size" | "type") => {
   if (sortColumn.value === column) {
-    sortDirection.value = sortDirection.value === 'asc' ? 'desc' : 'asc';
+    sortDirection.value = sortDirection.value === "asc" ? "desc" : "asc";
   } else {
     sortColumn.value = column;
-    sortDirection.value = 'asc';
+    sortDirection.value = "asc";
   }
 };
 
@@ -139,17 +139,19 @@ const handleFileChange = (e: Event) => {
   if (!files) return;
 
   const validFiles = Array.from(files).filter((file) =>
-      validateFileType(file, props.accept || ""),
+    validateFileType(file, props.accept || ""),
   );
 
   if (validFiles.length < files.length) {
-    console.warn("Some files are not valid, these were removed from the selection.");
+    console.warn(
+      "Some files are not valid, these were removed from the selection.",
+    );
   }
 
   validFiles.forEach((file) => filesStore.value.add(file));
 
   // Reset the input value to allow selecting the same file again
-  (e.target as HTMLInputElement).value = '';
+  (e.target as HTMLInputElement).value = "";
 
   emitUpdate();
 };
@@ -167,8 +169,8 @@ const validateFileType = (file: File, acceptTypes: string): boolean => {
   if (!acceptTypes) return true;
 
   const acceptedTypes = acceptTypes
-      .split(",")
-      .map((type) => type.trim().toLowerCase());
+    .split(",")
+    .map((type) => type.trim().toLowerCase());
   const fileType = file.type.toLowerCase();
   const fileExt = `.${file.name.split(".").pop()?.toLowerCase() || ""}`;
 

@@ -1,11 +1,15 @@
-use image::DynamicImage;
-use smartcrop;
 use std::num::NonZeroU32;
 use std::path::Path;
 
-pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicImage, String> {
+use image::DynamicImage;
+use smartcrop;
+
+use crate::error::AppError;
+
+pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicImage, AppError> {
     // Open the image
-    let img = image::open(image_path).map_err(|e| format!("Failed to open image: {}", e))?;
+    let img = image::open(image_path)
+        .map_err(|e| AppError::ImageProcessingError(format!("Failed to open image: {}", e)))?;
 
     // Find the best crop area
     let result = smartcrop::find_best_crop(
@@ -13,7 +17,7 @@ pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicI
         NonZeroU32::new(size).unwrap(),
         NonZeroU32::new(size).unwrap(),
     )
-    .map_err(|e| format!("Failed to find best crop: {}", e))?;
+    .map_err(|e| AppError::ImageProcessingError(format!("Failed to find best crop: {}", e)))?;
 
     let c = result.crop;
 

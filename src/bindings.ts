@@ -5,7 +5,7 @@
 
 
 export const commands = {
-async storeImage(imageData: number[], imageName: string, modelName: string, imageIndex: number) : Promise<Result<string, string>> {
+async storeImage(imageData: number[], imageName: string, modelName: string, imageIndex: number) : Promise<Result<string, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("store_image", { imageData, imageName, modelName, imageIndex }) };
 } catch (e) {
@@ -13,7 +13,7 @@ async storeImage(imageData: number[], imageName: string, modelName: string, imag
     else return { status: "error", error: e  as any };
 }
 },
-async storeModelFile(fileData: number[], fileName: string, modelName: string) : Promise<Result<string, string>> {
+async storeModelFile(fileData: number[], fileName: string, modelName: string) : Promise<Result<string, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("store_model_file", { fileData, fileName, modelName }) };
 } catch (e) {
@@ -21,7 +21,7 @@ async storeModelFile(fileData: number[], fileName: string, modelName: string) : 
     else return { status: "error", error: e  as any };
 }
 },
-async saveModel(model: StlModel) : Promise<Result<null, string>> {
+async saveModel(model: StlModel) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("save_model", { model }) };
 } catch (e) {
@@ -29,9 +29,17 @@ async saveModel(model: StlModel) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async createRelease(release: Release) : Promise<Result<null, string>> {
+async createRelease(release: Release) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("create_release", { release }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async finalizeRelease(releaseName: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("finalize_release", { releaseName }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -65,8 +73,9 @@ async setSettings(settings: Settings) : Promise<Result<null, string>> {
 
 /** user-defined types **/
 
+export type AppError = { IoError: string } | { JsonError: string } | { ImageProcessingError: string } | { FileProcessingError: string } | { ConfigError: string } | { NotFoundError: string }
 export type CompressionType = "SevenZip" | "Zip" | "TarGz" | "TarXz"
-export type Release = { name: string; date: string; version: string; designer: string; models: StlModel[]; description: string | null }
+export type Release = { name: string; date: string; version: string; designer: string; models: StlModel[]; description: string | null; groups: string[] }
 export type Settings = { scratch_dir: string | null; target_dir: string | null; compression_type: CompressionType | null; chunk_size: number | null }
 export type StlModel = { model_name: string; description: string | null; tags: string[]; images: string[]; model_files: string[]; group: string | null }
 

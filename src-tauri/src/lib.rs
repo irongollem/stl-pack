@@ -1,21 +1,24 @@
 mod compressors;
-mod file_handlers;
+mod file;
 mod image;
 mod models;
-
 mod settings;
+mod error;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use specta_typescript::Typescript;
 use tauri_specta::{collect_commands, Builder};
+use crate::image::handling::store_image;
+use crate::file::commands::{store_model_file, save_model, create_release, finalize_release};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
-        file_handlers::store_image,
-        file_handlers::store_model_file,
-        file_handlers::save_model,
-        file_handlers::create_release,
+        store_image,
+        store_model_file,
+        save_model,
+        create_release,
+        finalize_release,
         settings::get_settings,
         settings::set_settings,
     ]);
@@ -30,10 +33,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .invoke_handler(tauri::generate_handler![
-            file_handlers::store_image,
-            file_handlers::store_model_file,
-            file_handlers::save_model,
-            file_handlers::create_release,
+            store_image,
+            store_model_file,
+            save_model,
+            create_release,
+            finalize_release,
             settings::get_settings,
             settings::set_settings,
         ])

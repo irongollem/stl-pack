@@ -18,7 +18,7 @@ defineProps<{
   id: string;
   label?: string;
   placeholder?: string;
-  modelValue?: string;
+  modelValue?: string | null;
   required?: boolean;
 }>();
 

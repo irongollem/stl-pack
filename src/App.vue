@@ -4,8 +4,29 @@ import CreateRelease from "./views/CreateRelease.vue";
 import Settings from "./views/Settings.vue";
 import ToastContainer from "./components/ToastContainer.vue";
 import { useReleasesStore } from "./stores/releasesStore";
+import { useToastStore } from "./stores/toastStore.ts";
+import { commands } from "./bindings.ts";
 
 const releasesStore = useReleasesStore();
+const toastStore = useToastStore();
+
+const finalizeRelease = async () => {
+  if (releasesStore.release) {
+    const result = await commands.finalizeRelease(releasesStore.release.name);
+    if (result.status === "ok") {
+      toastStore.addToast(
+        "Release finalized and exported successfully",
+        "success",
+      );
+    } else {
+      toastStore.addToast(
+        "Failed to finalize release: " + result.error,
+        "error",
+        0,
+      );
+    }
+  }
+};
 </script>
 
 <template>
@@ -53,6 +74,25 @@ const releasesStore = useReleasesStore();
       />
       <div class="tab-content h-full overflow-y-auto" role="tabpanel">
         <AddSTL />
+      </div>
+
+      <input
+          type="radio"
+          name="finalize"
+          class="tab"
+          :class="{ 'tab-active': releasesStore.activeTab === 'finalize' }"
+          @change="releasesStore.setActiveTab('finalize')"
+          aria-label="Finalize"
+          :disabled="!releasesStore.releaseExists"
+      />
+      <div class="tab-content h-full overflow-y-auto" role="tabpanel">
+        <button
+            class="btn btn-success"
+            @click="finalizeRelease"
+            :disabled="!releasesStore.modelCount"
+        >
+          Finalize & Export Release
+        </button>
       </div>
     </div>
   </div>

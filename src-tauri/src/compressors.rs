@@ -3,10 +3,10 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
 use crate::models::CompressionType;
+use crate::error::AppError;
 
-fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, String> {
-    let resource_path = app_handle.path().resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, AppError> {
+    let resource_path = app_handle.path().resource_dir()?;
 
     #[cfg(target_os = "windows")]
     let binary_path = resource_path.join("win").join("7za.exe");
@@ -21,12 +21,10 @@ fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf
     #[cfg(not(target_os = "windows"))]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(&binary_path)
-            .map_err(|e| format!("Failed to get metadata: {}", e))?;
+        let metadata = fs::metadata(&binary_path)?;
         let mut perms = metadata.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&binary_path, perms)
-            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        fs::set_permissions(&binary_path, perms)?;
     }
 
     Ok(binary_path)
@@ -38,7 +36,7 @@ pub fn compress_dir(
     app_handle: &AppHandle,
     compression_type: CompressionType,
     chunk_size: Option<u32>,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let binary_path = get_7zip_path(app_handle)?;
 
     // Count total files for progress reporting
@@ -89,14 +87,13 @@ pub fn compress_dir(
     let mut child = command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start 7z: {}", e))?;
+        .spawn()?;
 
     let mut percent = 0;
     let stdout= if let Some(stdout) = child.stdout.take(){
         stdout
     } else {
-        return Err("Failed to get stdout".to_string());
+        return Err(AppError::FileProcessingError("Failed to get stdout".to_string()));
     };
 
     let reader = BufReader::new(stdout);
@@ -119,21 +116,22 @@ pub fn compress_dir(
                     "total": total_files,
                     "percent": percent,
                 }),
-                ).map_err(|e| format!("Failed to emit progress: {}", e))?;
+                )?;
             }
         }
     }
 
-    let status = child.wait().map_err(|e| format!("Failed to wait for 7z: {}", e))?;
+    let status = child.wait()?;
 
     if !status.success() {
         if let Some(mut stderr) = child.stderr.take() {
             use std::io::Read;
             let mut error = String::new();
             let _ = Read::read_to_string(&mut stderr, &mut error);
-            return Err(format!("7z failed: {}", error));
+            return Err(AppError::FileProcessingError(format!("7z failed: {}", error)));
         }
-        return Err("7z failed with unknown error".to_string());    }
+        return Err(AppError::FileProcessingError("7z failed with unknown error".to_string()));
+    }
 
     // Send completion notification
     app_handle.emit(
@@ -143,11 +141,10 @@ pub fn compress_dir(
             "total": total_files,
             "percent": 100,
         }),
-    ).map_err(|e| format!("Failed to emit progress: {}", e))?;
+    )?;
 
     // Clean up source directory
-    fs::remove_dir_all(source_dir)
-        .map_err(|e| format!("Failed to remove source directory: {}", e))?;
+    fs::remove_dir_all(source_dir)?;
 
     Ok(())
 }
@@ -157,9 +154,10 @@ fn parse_percentage(line: &str) -> Option<u8> {
     if pos == 0 { return None; }
     line[0..pos].trim().parse::<u8>().ok()
 }
-fn count_files_in_dir(dir: &Path, count: &mut u32) -> Result<(), String> {
-    for entry in fs::read_dir(dir).map_err(|err| format!("Failed to read dir: {}", err))? {
-        let entry = entry.map_err(|err| format!("Failed to read entry: {}", err))?;
+
+fn count_files_in_dir(dir: &Path, count: &mut u32) -> Result<(), AppError> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {

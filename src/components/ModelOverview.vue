@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {useReleasesStore} from "../stores/releasesStore.ts";
+import { useReleasesStore } from "../stores/releasesStore.ts";
 
 const releasesStore = useReleasesStore();
 </script>
@@ -11,12 +11,14 @@ const releasesStore = useReleasesStore();
   <table id="modelOverview" class="table table-xs w-full" v-if="releasesStore.release?.models.length">
     <thead>
     <tr>
+      <th>Group</th>
       <th>Model Name</th>
       <th>Actions</th>
     </tr>
     </thead>
     <tbody>
     <tr v-for="model in releasesStore.release.models" :key="model.model_name">
+      <td>{{ model.group || "-" }}</td>
       <td class="max-w-[200px] truncate" :title="model.model_name">{{ model.model_name }}</td>
       <td>
       </td>

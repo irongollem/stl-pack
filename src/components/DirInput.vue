@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {open} from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 
 const props = defineProps<{
   id: string;

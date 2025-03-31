@@ -12,6 +12,8 @@
 
         <TextArea id="description" placeholder="Enter the description (Optional)..." label="Description" v-model="model.description" />
 
+      <TextInput id="group" label="Group" placeholder="Enter group name (Optional)..." v-model="model.group" />
+
         <TagInput id="tags" v-model="model.tags" label="Tags" placeholder="Write tags here..." />
 
         <FileInput
@@ -70,15 +72,15 @@
 import TextArea from "../components/TextArea.vue";
 import TextInput from "../components/TextInput.vue";
 import TagInput from "../components/TagInput.vue";
-import {computed, onMounted, Ref, ref} from "vue";
+import { computed, onMounted, Ref, ref } from "vue";
 import { fileLogos } from "../types.ts";
 import FileInput from "../components/FileInput.vue";
 import { listen } from "@tauri-apps/api/event";
 import View from "../components/View.vue";
-import {commands, StlModel} from "../bindings.ts";
+import { commands, StlModel } from "../bindings.ts";
 import ImagePreview from "../components/ImagePreview.vue";
-import {useToastStore} from "../stores/toastStore.ts";
-import {useReleasesStore} from "../stores/releasesStore.ts";
+import { useToastStore } from "../stores/toastStore.ts";
+import { useReleasesStore } from "../stores/releasesStore.ts";
 
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();
@@ -97,11 +99,7 @@ const isStoring = ref(false);
 const storageProgress = ref(0);
 const totalFiles = ref(0);
 const processedFiles = ref(0);
-const storeFiles = async (
-  images: File[],
-  files: File[],
-  modelName: string,
-) => {
+const storeFiles = async (images: File[], files: File[], modelName: string) => {
   if (!model.value.model_name) {
     throw new Error("Model name is required for file upload");
   }
@@ -114,7 +112,7 @@ const storeFiles = async (
     if (image) {
       const fileData = new Uint8Array(await image.arrayBuffer());
       const fileBlob = await commands.storeImage(
-       Array.from(fileData),
+        Array.from(fileData),
         image.name,
         modelName,
         imageIndex,
@@ -130,36 +128,33 @@ const storeFiles = async (
 
   const processedModelFiles = [];
   for (const file of files) {
-      const fileData = new Uint8Array(await file.arrayBuffer());
-      const fileBlob = await commands.storeModelFile(
-        Array.from(fileData),
-        file.name,
-        modelName,
-      );
-      if (fileBlob.status === "ok") {
-        const filePath = fileBlob.data;
-        processedModelFiles.push(filePath);
-        processedFiles.value++;
-        storageProgress.value = processedFiles.value / totalFiles.value;
-      }
+    const fileData = new Uint8Array(await file.arrayBuffer());
+    const fileBlob = await commands.storeModelFile(
+      Array.from(fileData),
+      file.name,
+      modelName,
+    );
+    if (fileBlob.status === "ok") {
+      const filePath = fileBlob.data;
+      processedModelFiles.push(filePath);
+      processedFiles.value++;
+      storageProgress.value = processedFiles.value / totalFiles.value;
+    }
   }
 
   return { processedImages, processedModelFiles };
 };
 
-const formComplete = computed(() =>
-  model.value.model_name &&
-  modelFiles.value.length > 0 &&
-  images.value.length > 0
+const formComplete = computed(
+  () =>
+    model.value.model_name &&
+    modelFiles.value.length > 0 &&
+    images.value.length > 0,
 );
 
 const saveModelData = async () => {
   if (!formComplete.value) {
-    toastStore.addToast(
-      "Please make sure the form is complete",
-      "error",
-      0,
-    );
+    toastStore.addToast("Please make sure the form is complete", "error", 0);
     return;
   }
   try {
@@ -177,18 +172,11 @@ const saveModelData = async () => {
     };
 
     await commands.saveModel(modelData);
-    toastStore.addToast(
-      "Model saved successfully",
-      "success",
-    )
+    toastStore.addToast("Model saved successfully", "success");
     releasesStore.addModel(modelData);
     clearModel();
   } catch (error) {
-    toastStore.addToast(
-      "Failed to save model: " + error,
-      "error",
-      0,
-    );
+    toastStore.addToast("Failed to save model: " + error, "error", 0);
   } finally {
     isStoring.value = false;
   }

@@ -106,33 +106,37 @@ const imageData = ref<ImageItem[]>([]);
 const selectedImageIndex = ref(0);
 
 // Initialize from modelValue if provided
-watch(() => props.modelValue, (newFiles) => {
-  // Clean up old object URLs
-  imageData.value.forEach(img => {
-    if (img.objUrl?.startsWith("blob:")) {
-      URL.revokeObjectURL(img.objUrl);
-    }
-  });
+watch(
+  () => props.modelValue,
+  (newFiles) => {
+    // Clean up old object URLs
+    imageData.value.forEach((img) => {
+      if (img.objUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(img.objUrl);
+      }
+    });
 
-  // Create new image data from files
-  if (newFiles && newFiles.length > 0) {
-    imageData.value = newFiles.map(file => ({
-      file,
-      objUrl: URL.createObjectURL(file)
-    }));
-    selectedImageIndex.value = 0;
-  } else {
-    imageData.value = [];
-    selectedImageIndex.value = 0;
-  }
-}, { immediate: true });
+    // Create new image data from files
+    if (newFiles && newFiles.length > 0) {
+      imageData.value = newFiles.map((file) => ({
+        file,
+        objUrl: URL.createObjectURL(file),
+      }));
+      selectedImageIndex.value = 0;
+    } else {
+      imageData.value = [];
+      selectedImageIndex.value = 0;
+    }
+  },
+  { immediate: true },
+);
 
 const handleFileChange = (e: Event) => {
   const files = (e.target as HTMLInputElement).files;
   if (!files) return;
 
-  const validFiles = Array.from(files).filter(file =>
-      validateFileType(file, props.accept || "image/*")
+  const validFiles = Array.from(files).filter((file) =>
+    validateFileType(file, props.accept || "image/*"),
   );
 
   if (validFiles.length < files.length) {
@@ -140,18 +144,21 @@ const handleFileChange = (e: Event) => {
   }
 
   // Check for duplicates by file name and add only new files
-  const existingFileNames = new Set(imageData.value.map(item => item.file.name));
+  const existingFileNames = new Set(
+    imageData.value.map((item) => item.file.name),
+  );
 
-  const newFiles = validFiles.filter(file => !existingFileNames.has(file.name))
-      .map(file => ({
-        file,
-        objUrl: URL.createObjectURL(file)
-      }));
+  const newFiles = validFiles
+    .filter((file) => !existingFileNames.has(file.name))
+    .map((file) => ({
+      file,
+      objUrl: URL.createObjectURL(file),
+    }));
 
   if (newFiles.length > 0) {
     imageData.value = [...imageData.value, ...newFiles];
     // Reset the input to allow selecting the same files again
-    (e.target as HTMLInputElement).value = '';
+    (e.target as HTMLInputElement).value = "";
     emitUpdate();
   }
 };
@@ -193,7 +200,7 @@ const removeImage = (index: number) => {
 
 const emitUpdate = () => {
   // Extract just the File objects for the v-model
-  const files = imageData.value.map(item => item.file);
+  const files = imageData.value.map((item) => item.file);
   emit("update:modelValue", files);
 };
 
@@ -201,8 +208,8 @@ const validateFileType = (file: File, acceptTypes: string): boolean => {
   if (!acceptTypes) return true;
 
   const acceptedTypes = acceptTypes
-      .split(",")
-      .map((type) => type.trim().toLowerCase());
+    .split(",")
+    .map((type) => type.trim().toLowerCase());
   const fileType = file.type.toLowerCase();
   const fileExt = `.${file.name.split(".").pop()?.toLowerCase() || ""}`;
 
