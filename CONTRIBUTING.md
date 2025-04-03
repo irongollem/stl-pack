@@ -28,6 +28,13 @@ By participating in this project, you agree to maintain a respectful and inclusi
    cargo tauri dev
    ```
 
+### Auto-generated Files
+
+The following files are auto-generated and should not be manually edited:
+- `src/bindings.ts`: TypeScript bindings for Rust backend functions
+
+These files are generated automatically during the build process and are excluded from version control.
+
 ## Reporting Issues
 
 - Use the [GitHub issue tracker](https://github.com/irongollem/stl-pack/issues) to report bugs or suggest features
