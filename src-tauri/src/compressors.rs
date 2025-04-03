@@ -1,9 +1,9 @@
+use crate::error::AppError;
+use crate::models::CompressionType;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
-use crate::models::CompressionType;
-use crate::error::AppError;
 
 fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, AppError> {
     let resource_path = app_handle.path().resource_dir()?;
@@ -39,6 +39,13 @@ pub fn compress_dir(
 ) -> Result<(), AppError> {
     let binary_path = get_7zip_path(app_handle)?;
 
+    if !binary_path.exists() {
+        return Err(AppError::FileProcessingError(format!(
+            "7-Zip binary not found at {:?}. Please ensure the application is properly installed.",
+            binary_path
+        )));
+    }
+
     // Count total files for progress reporting
     let mut total_files = 0;
     count_files_in_dir(source_dir, &mut total_files)?;
@@ -49,7 +56,7 @@ pub fn compress_dir(
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);  // CREATE_NO_WINDOW
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
     command
@@ -61,16 +68,16 @@ pub fn compress_dir(
     match compression_type {
         CompressionType::Zip => {
             command.arg("-tzip");
-        },
+        }
         CompressionType::SevenZip => {
             command.arg("-t7z");
-        },
+        }
         CompressionType::TarGz => {
             command.arg("-tgzip");
-        },
+        }
         CompressionType::TarXz => {
             command.arg("-txz");
-        },
+        }
     }
 
     // Add split size parameter if needed
@@ -84,16 +91,28 @@ pub fn compress_dir(
         .arg(target_path)
         .arg(format!("{}/*", source_dir.to_string_lossy()));
 
-    let mut child = command
+    let command_str = format!("{:?}", command);
+    let mut child = match command
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            return Err(AppError::FileProcessingError(format!(
+                "Failed to start 7z process: {}. Command: {}",
+                e, command_str
+            )))
+        }
+    };
 
     let mut percent = 0;
-    let stdout= if let Some(stdout) = child.stdout.take(){
+    let stdout = if let Some(stdout) = child.stdout.take() {
         stdout
     } else {
-        return Err(AppError::FileProcessingError("Failed to get stdout".to_string()));
+        return Err(AppError::FileProcessingError(
+            "Failed to get stdout".to_string(),
+        ));
     };
 
     let reader = BufReader::new(stdout);
@@ -112,10 +131,10 @@ pub fn compress_dir(
                 app.emit(
                     "compression_progress",
                     serde_json::json!({
-                    "processed": processed,
-                    "total": total_files,
-                    "percent": percent,
-                }),
+                        "processed": processed,
+                        "total": total_files,
+                        "percent": percent,
+                    }),
                 )?;
             }
         }
@@ -128,9 +147,14 @@ pub fn compress_dir(
             use std::io::Read;
             let mut error = String::new();
             let _ = Read::read_to_string(&mut stderr, &mut error);
-            return Err(AppError::FileProcessingError(format!("7z failed: {}", error)));
+            return Err(AppError::FileProcessingError(format!(
+                "7z failed: {}",
+                error
+            )));
         }
-        return Err(AppError::FileProcessingError("7z failed with unknown error".to_string()));
+        return Err(AppError::FileProcessingError(
+            "7z failed with unknown error".to_string(),
+        ));
     }
 
     // Send completion notification
@@ -151,7 +175,9 @@ pub fn compress_dir(
 
 fn parse_percentage(line: &str) -> Option<u8> {
     let pos = line.find('%')?;
-    if pos == 0 { return None; }
+    if pos == 0 {
+        return None;
+    }
     line[0..pos].trim().parse::<u8>().ok()
 }
 

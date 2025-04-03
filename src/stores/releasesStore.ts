@@ -8,6 +8,7 @@ export type Tab = "settings" | "release" | "addStl" | "finalize";
 export const useReleasesStore = defineStore("releases", () => {
   const toastStore = useToastStore();
   const release = ref<Release | undefined>();
+  const releaseDir = ref<string | undefined>();
   const activeTab = ref<Tab>("release");
 
   const setActiveTab = (tab: Tab) => {
@@ -55,6 +56,7 @@ export const useReleasesStore = defineStore("releases", () => {
     activeTab,
     setActiveTab,
     release,
+    releaseDir,
     releaseExists,
     updateRelease,
     modelCount,

@@ -1,5 +1,5 @@
 <template>
-  <form @submit.prevent="saveModelData">
+  <form @submit.prevent="saveModelData" @keydown.enter.prevent">
   <View>
     <template #left>
       <h1 class="text-xl font-bold">Model info</h1>
@@ -171,10 +171,24 @@ const saveModelData = async () => {
       model_files: storedFiles.processedModelFiles,
     };
 
-    await commands.saveModel(modelData);
+    console.log("Saving model with release directory:", releasesStore.releaseDir);
+    // Make sure releaseDirectoryName is available
+    if (!releasesStore.releaseDir) {
+      throw new Error("Release directory name is missing");
+    }
+
+    await commands.saveModel(
+      modelData,
+      releasesStore.releaseDir
+    );
+
+    console.log("Model saved successfully");
     toastStore.addToast("Model saved successfully", "success");
     releasesStore.addModel(modelData);
     clearModel();
+    // Also clear file lists
+    modelFiles.value = [];
+    images.value = [];
   } catch (error) {
     toastStore.addToast("Failed to save model: " + error, "error", 0);
   } finally {
