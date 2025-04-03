@@ -1,14 +1,15 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
-#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct Release {
     pub name: String,
+    pub designer: String,
+    pub description: String,
     pub date: String,
     pub version: String,
-    pub designer: String,
-    pub models: Vec<StlModel>,
-    pub description: Option<String>,
-    pub groups: Vec<String>,
+    pub models: Vec<String>,
+    pub release_dir: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
