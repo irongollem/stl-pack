@@ -9,6 +9,8 @@ mod settings;
 use crate::file::commands::{create_release, finalize_release, save_model, store_model_file};
 use crate::image::handling::store_image;
 use specta_typescript::Typescript;
+#[allow(unused_imports)]
+use tauri_plugin_fs::FsExt;
 use tauri_specta::{collect_commands, Builder};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -32,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

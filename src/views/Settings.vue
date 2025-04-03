@@ -4,11 +4,21 @@
     <template #left>
       <h1 class="text-xl font-bold">Settings</h1>
       <form class="mt-4 space-y-6">
-        <!-- Scratch Directory Selection -->
-        <DirInput id="scratch_dir" label="Temporary Files Directory" v-model="settings.scratch_dir" tooltip="Your files will be temporarily stored here before being compressed." />
+        <FileSelect
+          id="scratch_dir"
+          label="Temporary Files Directory"
+          dir-mode
+          v-model="settings.scratch_dir"
+          tooltip="Your files will be temporarily stored here before being compressed."
+        />
 
-        <!-- Target Directory Selection -->
-        <DirInput id="target_dir" label="Target Directory" v-model="settings.target_dir" tooltip="Your compressed files will be saved here." />
+        <FileSelect
+          id="target_dir"
+          label="Target Directory"
+          dir-mode
+          v-model="settings.target_dir"
+          tooltip="Your compressed files will be saved here."
+        />
 
         <!-- Compression Type -->
         <div class="form-control">
@@ -36,10 +46,9 @@
 
 <script setup lang="ts">
 import View from "../components/View.vue";
+import FileSelect from "../components/FileSelect.vue";
 import { ref, onMounted, watch } from "vue";
-import { commands, Settings, CompressionType } from "../bindings.ts";
-import DirInput from "../components/DirInput.vue";
-
+import { commands, type Settings, type CompressionType } from "../bindings.ts";
 // Settings state
 const settings = ref<Settings>({
   scratch_dir: null,

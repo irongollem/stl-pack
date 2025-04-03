@@ -171,16 +171,16 @@ const saveModelData = async () => {
       model_files: storedFiles.processedModelFiles,
     };
 
-    console.log("Saving model with release directory:", releasesStore.releaseDir);
+    console.log(
+      "Saving model with release directory:",
+      releasesStore.releaseDir,
+    );
     // Make sure releaseDirectoryName is available
     if (!releasesStore.releaseDir) {
       throw new Error("Release directory name is missing");
     }
 
-    await commands.saveModel(
-      modelData,
-      releasesStore.releaseDir
-    );
+    await commands.saveModel(modelData);
 
     console.log("Model saved successfully");
     toastStore.addToast("Model saved successfully", "success");

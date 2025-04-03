@@ -3,28 +3,21 @@
 
   <div class="border border-gray-500 rounded-box bg-base-100 p-2 w-full mb-2">
     <div class="flex items-center gap-2 mb-3">
-      <label class="btn btn-primary flex-grow">
-        <input
-            class="hidden"
-            type="file"
-            :accept="accept || 'image/*'"
-            multiple
-            @change="handleFileChange"
-        />
+      <button @click="selectImages" class="btn btn-primary flex-grow">
         <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
           <path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd" />
         </svg>
         Add Images
-      </label>
-      <span class="text-sm opacity-70" v-if="imageData.length">
-        {{ imageData.length }} image{{ imageData.length !== 1 ? 's' : '' }} selected
+      </button>
+      <span class="text-sm opacity-70" v-if="images.length">
+        {{ images.length }} image{{ images.length !== 1 ? 's' : '' }} selected
       </span>
     </div>
 
 
   <!-- Main Preview Image -->
-  <div v-if="imageData.length > 0" class="w-full aspect-square mb-4">
-    <img :src="imageData[selectedImageIndex].objUrl"
+  <div v-if="images.length > 0" class="w-full aspect-square mb-4">
+    <img :src="images[selectedImageIndex].getPreviewUrl()"
          alt="Primary preview"
          class="w-full h-full object-cover rounded-lg border border-base-300 cursor-pointer hover:border-2 hover:border-primary-500"
          @click="imageDetailViewOpen = true"
@@ -32,14 +25,14 @@
   </div>
 
   <!-- Image Thumbnails -->
-  <div v-if="imageData.length > 0" class="flex overflow-x-auto gap-4 pb-2 max-w-full flex-shrink-0 overflow-y-hidden">
+  <div v-if="images.length > 0" class="flex overflow-x-auto gap-4 pb-2 max-w-full flex-shrink-0 overflow-y-hidden">
     <div
-        v-for="(img, index) in imageData"
+        v-for="(img, index) in images"
         :key="index"
         class="relative flex-shrink-0 w-32"
     >
       <img
-          :src="img.objUrl"
+          :src="img.getPreviewUrl()"
           :alt="`Image ${index + 1}`"
           class="w-32 h-32 object-cover rounded cursor-pointer"
           :class="{
@@ -74,8 +67,8 @@
 
   <ModalView :isOpen="imageDetailViewOpen" @close="imageDetailViewOpen = false">
     <img
-        v-if="imageData.length > 0"
-        :src="imageData[selectedImageIndex].objUrl"
+        v-if="images.length > 0"
+        :src="images[selectedImageIndex].getPreviewUrl()"
         alt="Full size preview"
         class="max-w-full max-h-[90vh] object-contain"
     />
@@ -85,89 +78,67 @@
 <script setup lang="ts">
 import ModalView from "./ModalView.vue";
 import { ref, watch } from "vue";
-
-interface ImageItem {
-  file: File;
-  objUrl: string;
-}
+import { useFileSelect, type SelectedFile } from "../composables/useFileSelect";
 
 const imageDetailViewOpen = ref(false);
 
 const props = defineProps<{
-  modelValue?: File[];
+  modelValue?: SelectedFile[];
   accept?: string;
 }>();
 
 const emit = defineEmits<{
-  (e: "update:modelValue", files: File[]): void;
+  "update:modelValue": [files: SelectedFile[]];
 }>();
 
-const imageData = ref<ImageItem[]>([]);
+const { selectFiles } = useFileSelect();
+const images = ref<SelectedFile[]>([]);
 const selectedImageIndex = ref(0);
 
-// Initialize from modelValue if provided
 watch(
   () => props.modelValue,
   (newFiles) => {
-    // Clean up old object URLs
-    imageData.value.forEach((img) => {
-      if (img.objUrl?.startsWith("blob:")) {
-        URL.revokeObjectURL(img.objUrl);
-      }
-    });
-
-    // Create new image data from files
     if (newFiles && newFiles.length > 0) {
-      imageData.value = newFiles.map((file) => ({
-        file,
-        objUrl: URL.createObjectURL(file),
-      }));
-      selectedImageIndex.value = 0;
+      images.value = newFiles;
     } else {
-      imageData.value = [];
-      selectedImageIndex.value = 0;
+      images.value = [];
     }
+    selectedImageIndex.value = 0;
   },
   { immediate: true },
 );
 
-const handleFileChange = (e: Event) => {
-  const files = (e.target as HTMLInputElement).files;
-  if (!files) return;
+const selectImages = async () => {
+  try {
+    const imageAccept = props.accept || "jpg,jpeg,png,gif,webp,svg,bmp";
+    const files = await selectFiles({
+      multiple: true,
+      accept: imageAccept,
+      title: "Select Images",
+    });
 
-  const validFiles = Array.from(files).filter((file) =>
-    validateFileType(file, props.accept || "image/*"),
-  );
+    if (!files) return;
 
-  if (validFiles.length < files.length) {
-    console.warn("Some files are not valid images and were removed");
-  }
+    // Check for duplicates by file path
+    const existingPaths = new Set(images.value.map((file) => file.path));
 
-  // Check for duplicates by file name and add only new files
-  const existingFileNames = new Set(
-    imageData.value.map((item) => item.file.name),
-  );
+    const newFiles = files.filter((file) => !existingPaths.has(file.path));
 
-  const newFiles = validFiles
-    .filter((file) => !existingFileNames.has(file.name))
-    .map((file) => ({
-      file,
-      objUrl: URL.createObjectURL(file),
-    }));
-
-  if (newFiles.length > 0) {
-    imageData.value = [...imageData.value, ...newFiles];
-    // Reset the input to allow selecting the same files again
-    (e.target as HTMLInputElement).value = "";
-    emitUpdate();
+    if (newFiles.length > 0) {
+      // Add new images to existing ones
+      images.value = [...images.value, ...newFiles];
+      emitUpdate();
+    }
+  } catch (error) {
+    console.error("Error selecting images:", error);
   }
 };
 
 const makePrimary = (index: number) => {
-  if (index > 0 && index < imageData.value.length) {
+  if (index > 0 && index < images.value.length) {
     // Move the selected image to the front (index 0)
-    const primaryImage = imageData.value.splice(index, 1)[0];
-    imageData.value.unshift(primaryImage);
+    const primaryImage = images.value.splice(index, 1)[0];
+    images.value.unshift(primaryImage);
 
     // Update selected index to track the same image
     selectedImageIndex.value = 0;
@@ -176,13 +147,8 @@ const makePrimary = (index: number) => {
 };
 
 const removeImage = (index: number) => {
-  if (index >= 0 && index < imageData.value.length) {
-    const img = imageData.value[index];
-    if (img.objUrl?.startsWith("blob:")) {
-      URL.revokeObjectURL(img.objUrl);
-    }
-
-    imageData.value.splice(index, 1);
+  if (index >= 0 && index < images.value.length) {
+    images.value.splice(index, 1);
 
     // Adjust selected index if necessary
     if (index <= selectedImageIndex.value) {
@@ -190,7 +156,7 @@ const removeImage = (index: number) => {
     }
 
     // Handle empty state
-    if (imageData.value.length === 0) {
+    if (images.value.length === 0) {
       selectedImageIndex.value = 0;
     }
 
@@ -199,28 +165,6 @@ const removeImage = (index: number) => {
 };
 
 const emitUpdate = () => {
-  // Extract just the File objects for the v-model
-  const files = imageData.value.map((item) => item.file);
-  emit("update:modelValue", files);
-};
-
-const validateFileType = (file: File, acceptTypes: string): boolean => {
-  if (!acceptTypes) return true;
-
-  const acceptedTypes = acceptTypes
-    .split(",")
-    .map((type) => type.trim().toLowerCase());
-  const fileType = file.type.toLowerCase();
-  const fileExt = `.${file.name.split(".").pop()?.toLowerCase() || ""}`;
-
-  return acceptedTypes.some((type) => {
-    if (type.startsWith(".")) {
-      return fileExt === type;
-    } else if (type.includes("/*")) {
-      const [category] = type.split("/");
-      return fileType.startsWith(`${category}/`);
-    }
-    return fileType === type;
-  });
+  emit("update:modelValue", images.value);
 };
 </script>

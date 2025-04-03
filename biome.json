@@ -12,6 +12,7 @@
   "formatter": {
     "enabled": true,
     "indentStyle": "space",
+    "indentWidth": 2,
     "ignore": ["node_modules", "**/target/**", "src/bindings.ts"]
   },
   "organizeImports": {
