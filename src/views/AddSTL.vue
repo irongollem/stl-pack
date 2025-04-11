@@ -51,7 +51,7 @@
         </div>
     </template>
 
-    <template  #right>
+    <template #right>
       <ImagePreview v-model="images" />
     </template>
   </View>

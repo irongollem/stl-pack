@@ -1,27 +1,30 @@
-use std::fmt;
-use std::io;
 use serde::Serialize;
 use specta::Type;
+use std::fmt;
+use std::io;
 
 #[derive(Debug, Type, Serialize)]
+#[non_exhaustive]
 pub enum AppError {
+    InvalidInput(String),
     IoError(String),
     JsonError(String),
-    ImageProcessingError(String),
     FileProcessingError(String),
     ConfigError(String),
     NotFoundError(String),
+    ImageProcessingError(String),
 }
 
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidInput(e) => write!(f, "Invalid input: {}", e),
             Self::IoError(e) => write!(f, "IO error: {}", e),
             Self::JsonError(e) => write!(f, "JSON error: {}", e),
-            Self::ImageProcessingError(msg) => write!(f, "Image processing error: {}", msg),
             Self::FileProcessingError(msg) => write!(f, "File processing error: {}", msg),
             Self::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
             Self::NotFoundError(msg) => write!(f, "Not found: {}", msg),
+            Self::ImageProcessingError(msg) => write!(f, "Failed to process image: {}", msg),
         }
     }
 }
@@ -44,9 +47,12 @@ impl From<tauri::Error> for AppError {
     }
 }
 
-// For Tauri command compatibility
-impl Into<String> for AppError {
-    fn into(self) -> String {
-        self.to_string()
+impl From<AppError> for String {
+    fn from(err: AppError) -> String {
+        err.to_string()
     }
+}
+
+impl Drop for AppError {
+    fn drop(&mut self) {}
 }

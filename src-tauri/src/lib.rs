@@ -5,9 +5,7 @@ mod image;
 mod models;
 mod settings;
 
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use crate::file::commands::{create_release, finalize_release, save_model, store_model_file};
-use crate::image::handling::store_image;
+use crate::file::commands::{create_release, finalize_release, save_model};
 use specta_typescript::Typescript;
 #[allow(unused_imports)]
 use tauri_plugin_fs::FsExt;
@@ -16,8 +14,6 @@ use tauri_specta::{collect_commands, Builder};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
-        store_image,
-        store_model_file,
         save_model,
         create_release,
         finalize_release,
@@ -46,8 +42,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            store_image,
-            store_model_file,
             save_model,
             create_release,
             finalize_release,

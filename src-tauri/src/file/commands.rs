@@ -1,104 +1,131 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
 use crate::compressors::compress_dir;
 use crate::error::AppError;
-use crate::file::storage::{get_storage_dir, move_file_with_paths, move_files_with_processor, write_file};
+use crate::file::storage::get_storage_dir;
 use crate::file::utils::clean_name;
-use crate::image::handling::{store_image_and_create_thumbnail};
 use crate::models::{CompressionType, Release, StlModel};
 use crate::settings::SETTINGS_CACHE;
 
-#[tauri::command]
-#[specta::specta]
-pub async fn store_model_file(
-    app_handle: AppHandle,
-    file_data: Vec<u8>,
-    file_name: String,
-    model_name: String,
-) -> Result<String, AppError> {
-    let settings = SETTINGS_CACHE.lock()
-        .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-    let temp_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "temp".to_string())?;
-    let clean_model_name = clean_name(&model_name);
-    let new_filename = format!("{}-{}", clean_model_name, file_name);
-    let file_path = temp_dir.join(new_filename);
-    write_file(&file_path, &file_data)?;
-
-    // Return the file path as a string
-    Ok(file_path.to_string_lossy().to_string())
-}
+use super::storage::{convert_to_relative_path, get_destination_folder, rename_image};
 
 #[tauri::command]
 #[specta::specta]
 pub async fn save_model(
     app_handle: AppHandle,
     model: StlModel,
-) -> Result<(), AppError> {
-    let settings = SETTINGS_CACHE.lock()
-        .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
+    release_dir: String,
+    file_paths: Vec<String>,
+    image_paths: Vec<String>,
+) -> Result<StlModel, AppError> {
+    let var_name = {
+        let settings = SETTINGS_CACHE
+            .lock()
+            .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
+        settings.scratch_dir.clone()
+    };
+    let scratch_dir = var_name;
 
-    // Get the current release directory
-    let releases_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "releases".to_string())?;
-    let release_entries = fs::read_dir(&releases_dir)?;
-    let release_dir = release_entries
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
-        .ok_or_else(|| AppError::NotFoundError("No active release found. Create a release first.".to_string()))?
-        .path();
+    let release_path = get_storage_dir(&app_handle, scratch_dir, release_dir)?;
 
-    // Create models directory inside the release
-    let models_dir = release_dir.join("models");
-    fs::create_dir_all(&models_dir)?;
-
-    // Handle group folder structure
-    let model_dir = if let Some(group_name) = &model.group {
-        let clean_group_name = clean_name(group_name);
-        let group_dir = models_dir.join(&clean_group_name);
-        fs::create_dir_all(&group_dir)?;
-        group_dir.join(clean_name(&model.model_name))
-    } else {
-        models_dir.join(clean_name(&model.model_name))
+    let clean_model_name = clean_name(&model.model_name);
+    let model_folder = match model.group {
+        Some(ref group_name) => {
+            let clean_group_name = clean_name(group_name);
+            let group_dir = release_path.join(&clean_group_name);
+            fs::create_dir_all(&group_dir)?;
+            group_dir.join(&clean_model_name)
+        }
+        None => release_path.join(&clean_model_name),
     };
 
-    if model_dir.exists() {
-        fs::remove_dir_all(&model_dir)?;
+    fs::create_dir_all(&model_folder)
+        .map_err(|e| AppError::IoError(format!("failed to create model folder; {}", e)))?;
+
+    fn copy_images(
+        image_paths: &[String],
+        model_folder: &Path,
+        clean_model_name: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let mut copied_images = Vec::new();
+
+        for (i, path) in image_paths.iter().enumerate() {
+            let source_path = Path::new(path);
+            let new_name = rename_image(clean_model_name, source_path, i);
+            let destination_path = model_folder.join(&new_name);
+
+            fs::copy(source_path, &destination_path)
+                .map_err(|e| AppError::IoError(format!("failed to copy image; {}", e)))?;
+            copied_images.push(destination_path.to_string_lossy().into_owned());
+        }
+
+        Ok(copied_images)
     }
 
-    fs::create_dir_all(&model_dir)?;
+    fn copy_files(file_paths: &[String], model_folder: &Path) -> Result<Vec<String>, AppError> {
+        let mut copied_files = Vec::new();
 
-    // Move files and get relative paths
-    let relative_model_file_paths = move_files_with_processor(&model.model_files, &model_dir, move_file_with_paths)?;
-    let relative_image_paths = move_files_with_processor(&model.images, &model_dir, store_image_and_create_thumbnail)?;
+        for path in file_paths {
+            let source_path = Path::new(path);
+            let file_name = source_path
+                .file_name()
+                .ok_or_else(|| AppError::IoError(format!("Invalid file path: {}", path)))?;
 
-    // Create a model with relative paths instead of absolute
+            let destination_folder = get_destination_folder(model_folder, source_path);
+            let destination_path = destination_folder.join(file_name);
+
+            fs::copy(source_path, &destination_path)
+                .map_err(|e| AppError::IoError(format!("failed to copy file; {}", e)))?;
+            copied_files.push(destination_path.to_string_lossy().into_owned());
+        }
+
+        Ok(copied_files)
+    }
+
+    let copied_images = copy_images(&image_paths, &model_folder, &clean_model_name)?;
+    let copied_files = copy_files(&file_paths, &model_folder)?;
+
+    let mut relative_image_paths = Vec::new();
+    for path in &copied_images {
+        let rel_path = convert_to_relative_path(path, &model_folder).map_err(|e| {
+            AppError::IoError(format!("Failed to convert image path to relative: {}", e))
+        })?;
+        relative_image_paths.push(rel_path);
+    }
+
+    let mut relative_file_paths = Vec::new();
+    for path in &copied_files {
+        let rel_path = convert_to_relative_path(path, &model_folder).map_err(|e| {
+            AppError::IoError(format!("Failed to convert file path to relative: {}", e))
+        })?;
+        relative_file_paths.push(rel_path);
+    }
+
     let model_with_relative_paths = StlModel {
         model_name: model.model_name,
         description: model.description,
         tags: model.tags,
         group: model.group,
         images: relative_image_paths,
-        model_files: relative_model_file_paths,
+        model_files: relative_file_paths,
     };
 
-    // Save the JSON with relative paths
     let model_json = serde_json::to_string_pretty(&model_with_relative_paths)?;
-    fs::write(&model_dir.join("model.json"), model_json)?;
+    fs::write(&model_folder.join("model.json"), model_json)?;
 
-    Ok(())
+    Ok(model_with_relative_paths)
 }
 
 #[tauri::command]
 #[specta::specta]
-pub async fn create_release(
-    app_handle: AppHandle,
-    release: Release,
-) -> Result<(), AppError> {
-    let settings = SETTINGS_CACHE.lock()
+pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<(), AppError> {
+    let settings = SETTINGS_CACHE
+        .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-    let release_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "releases".to_string())?;
+    let scratch_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "".to_string())?;
+
     let release_name = clean_name(&release.name);
     let designer_name = clean_name(&release.designer);
 
@@ -111,7 +138,7 @@ pub async fn create_release(
     };
 
     let release_dir_name = format!("{}-{}-{}", designer_name, release_date, release_name);
-    let release_dir = release_dir.join(&release_dir_name);
+    let release_dir = scratch_dir.join(&release_dir_name);
 
     if release_dir.exists() {
         fs::remove_dir_all(&release_dir)?;
@@ -128,19 +155,18 @@ pub async fn create_release(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn finalize_release(
-    app_handle: AppHandle,
-    release_name: String,
-) -> Result<(), AppError> {
-    let settings = SETTINGS_CACHE.lock()
+pub async fn finalize_release(app_handle: AppHandle, release_name: String) -> Result<(), AppError> {
+    let settings = SETTINGS_CACHE
+        .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
 
-    let releases_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "releases".to_string())?;
+    let scratch_dir = get_storage_dir(
+        &app_handle,
+        settings.scratch_dir.clone(),
+        "".to_string(), // Empty string to avoid the "releases" subdirectory
+    )?;
 
-    // Find the release directory by name
-    let entries = fs::read_dir(&releases_dir)?;
-
-    // Find the directory that contains the release name
+    let entries = fs::read_dir(&scratch_dir)?;
     let release_dir = entries
         .filter_map(Result::ok)
         .filter(|e| e.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
@@ -148,17 +174,14 @@ pub async fn finalize_release(
         .ok_or_else(|| AppError::NotFoundError(format!("Release '{}' not found", release_name)))?
         .path();
 
-    // Determine the target directory from settings or use default
     let target_dir = if let Some(dir) = &settings.target_dir {
         PathBuf::from(dir)
     } else {
-        app_handle.path().app_data_dir()?
-            .join("exports")
+        app_handle.path().app_data_dir()?.join("exports")
     };
 
     fs::create_dir_all(&target_dir)?;
 
-    // Get release directory name for the archive
     let release_dir_name = release_dir
         .file_name()
         .ok_or_else(|| AppError::ConfigError("Invalid release directory name".to_string()))?
@@ -167,15 +190,19 @@ pub async fn finalize_release(
 
     let archive_path = target_dir.join(format!("{}.zip", release_dir_name));
 
-    // Compress the entire release directory
     compress_dir(
         &release_dir,
         &archive_path,
         &app_handle,
-        settings.compression_type.clone().unwrap_or(CompressionType::Zip),
+        settings
+            .compression_type
+            .clone()
+            .unwrap_or(CompressionType::Zip),
         settings.chunk_size,
     )?;
 
+    fs::remove_dir_all(&release_dir)
+        .map_err(|e| AppError::IoError(format!("Failed to clean up release directory: {}", e)))?;
+
     Ok(())
 }
-

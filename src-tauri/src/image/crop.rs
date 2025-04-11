@@ -6,6 +6,7 @@ use smartcrop;
 
 use crate::error::AppError;
 
+#[allow(dead_code)]
 pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicImage, AppError> {
     // Open the image
     let img = image::open(image_path)
