@@ -8,7 +8,7 @@ export interface SelectedFile {
   path: string; // The full file path
   name: string; // The file name
   info: FileInfo; // The standard Tauri FileInfo
-  type?: string; // Our custom file type/extension
+  fileType?: string; // Our custom file type/extension
 
   getPreviewUrl: () => string;
 }
@@ -126,7 +126,7 @@ export function useFileSelect() {
             path,
             name: fileName,
             info: fileInfo,
-            type: extension ? `.${extension}` : "Unknown",
+            fileType: extension ? `.${extension}` : "Unknown",
             getPreviewUrl() {
               return convertFileSrc(this.path);
             },

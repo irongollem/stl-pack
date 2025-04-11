@@ -49,16 +49,6 @@
           </button>
           <button class="btn btn-error" @click="clearModel">Clear Model</button>
         </div>
-        <div v-if="isStoring" class="w-full">
-          <h3>Moving files to temporary directory</h3>
-          <progress class="progress w-full" :value="storageProgress" max="100" />
-          <p class="text-sm text-center">Processing files: {{processedFiles}}/{{totalFiles}}</p>
-        </div>
-        <div v-if="isCompressing" class="w-full">
-          <h3>Compressing files</h3>
-          <progress class="progress w-full" :value="compressionProgress" max="100" />
-          <p class="text-sm text-center">Compressing files: {{compressedFiles}}/{{totalCompressedFiles}}</p>
-        </div>
     </template>
 
     <template  #right>
@@ -72,15 +62,15 @@
 import TextArea from "../components/TextArea.vue";
 import TextInput from "../components/TextInput.vue";
 import TagInput from "../components/TagInput.vue";
-import { computed, onMounted, Ref, ref } from "vue";
+import { computed, ref } from "vue";
+import type { Ref } from "vue";
 import { fileLogos } from "../types.ts";
-import FileInput from "../components/FileInput.vue";
-import { listen } from "@tauri-apps/api/event";
 import View from "../components/View.vue";
-import { commands, StlModel } from "../bindings.ts";
+import { commands, type StlModel } from "../bindings.ts";
 import ImagePreview from "../components/ImagePreview.vue";
 import { useToastStore } from "../stores/toastStore.ts";
 import { useReleasesStore } from "../stores/releasesStore.ts";
+import type { SelectedFile } from "../composables/useFileSelect";
 
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();
@@ -92,58 +82,10 @@ const model: Ref<StlModel> = ref({
   model_files: [],
   group: null,
 });
-const images = ref<File[]>([]);
-const modelFiles = ref<File[]>([]);
+const images = ref<SelectedFile[]>([]);
+const modelFiles = ref<SelectedFile[]>([]);
 
 const isStoring = ref(false);
-const storageProgress = ref(0);
-const totalFiles = ref(0);
-const processedFiles = ref(0);
-const storeFiles = async (images: File[], files: File[], modelName: string) => {
-  if (!model.value.model_name) {
-    throw new Error("Model name is required for file upload");
-  }
-  totalFiles.value = images.length + files.length;
-  processedFiles.value = 0;
-  storageProgress.value = 0;
-
-  const processedImages = [];
-  for (const [imageIndex, image] of images.entries()) {
-    if (image) {
-      const fileData = new Uint8Array(await image.arrayBuffer());
-      const fileBlob = await commands.storeImage(
-        Array.from(fileData),
-        image.name,
-        modelName,
-        imageIndex,
-      );
-      if (fileBlob.status === "ok") {
-        const filePath = fileBlob.data;
-        processedImages.push(filePath);
-        processedFiles.value++;
-        storageProgress.value = processedFiles.value / totalFiles.value;
-      }
-    }
-  }
-
-  const processedModelFiles = [];
-  for (const file of files) {
-    const fileData = new Uint8Array(await file.arrayBuffer());
-    const fileBlob = await commands.storeModelFile(
-      Array.from(fileData),
-      file.name,
-      modelName,
-    );
-    if (fileBlob.status === "ok") {
-      const filePath = fileBlob.data;
-      processedModelFiles.push(filePath);
-      processedFiles.value++;
-      storageProgress.value = processedFiles.value / totalFiles.value;
-    }
-  }
-
-  return { processedImages, processedModelFiles };
-};
 
 const formComplete = computed(
   () =>
@@ -157,64 +99,39 @@ const saveModelData = async () => {
     toastStore.addToast("Please make sure the form is complete", "error", 0);
     return;
   }
+
   try {
-    isStoring.value = true;
-    const storedFiles = await storeFiles(
-      images.value,
-      modelFiles.value,
-      model.value.model_name,
-    );
-
-    const modelData: StlModel = {
-      ...model.value,
-      images: storedFiles.processedImages,
-      model_files: storedFiles.processedModelFiles,
-    };
-
-    console.log(
-      "Saving model with release directory:",
-      releasesStore.releaseDir,
-    );
     // Make sure releaseDirectoryName is available
     if (!releasesStore.releaseDir) {
       throw new Error("Release directory name is missing");
     }
 
-    await commands.saveModel(modelData);
-
-    console.log("Model saved successfully");
-    toastStore.addToast("Model saved successfully", "success");
-    releasesStore.addModel(modelData);
-    clearModel();
-    // Also clear file lists
-    modelFiles.value = [];
-    images.value = [];
+    const savedModel = await commands.saveModel(
+      model.value,
+      releasesStore.releaseDir,
+      modelFiles.value.map((f) => f.path),
+      images.value.map((f) => f.path),
+    );
+    if (savedModel.status === "ok") {
+      toastStore.addToast("Model saved successfully", "success");
+      releasesStore.addModel(savedModel.data);
+      clearModel();
+      // Also clear file lists
+      modelFiles.value = [];
+      images.value = [];
+    } else {
+      toastStore.addToast(
+        `Failed to save model: ${savedModel.error}`,
+        "error",
+        0,
+      );
+    }
   } catch (error) {
-    toastStore.addToast("Failed to save model: " + error, "error", 0);
+    toastStore.addToast(`Failed to save model: ${error}`, "error", 0);
   } finally {
     isStoring.value = false;
   }
 };
-
-const compressionProgress = ref(0);
-const compressedFiles = ref(0);
-const totalCompressedFiles = ref(0);
-const isCompressing = ref(false);
-interface CompressionProgressPayload {
-  percent: number;
-  processed: number;
-  total: number;
-}
-
-onMounted(async () => {
-  await listen<CompressionProgressPayload>("compression_progress", (event) => {
-    const data = event.payload;
-    compressionProgress.value = data.percent;
-    compressedFiles.value = data.processed;
-    totalCompressedFiles.value = data.total;
-    isCompressing.value = data.processed < data.total;
-  });
-});
 
 const clearModel = () => {
   model.value = {
@@ -223,6 +140,7 @@ const clearModel = () => {
     tags: [],
     images: [],
     model_files: [],
+    group: "",
   };
   images.value = [];
 };
@@ -231,12 +149,13 @@ const getLogo = (fileName: string) => {
   const ext = fileName.split(".").pop();
   if (ext === "stl") {
     return fileLogos.stl;
-  } else if (ext === "chitu" || ext === "chitubox") {
-    return fileLogos.chitubox;
-  } else if (ext === "lyt" || ext === "lys" || ext === "lychee") {
-    return fileLogos.lychee;
-  } else {
-    return "tauri.svg";
   }
+  if (ext === "chitu" || ext === "chitubox") {
+    return fileLogos.chitubox;
+  }
+  if (ext === "lyt" || ext === "lys" || ext === "lychee") {
+    return fileLogos.lychee;
+  }
+  return "tauri.svg";
 };
 </script>
