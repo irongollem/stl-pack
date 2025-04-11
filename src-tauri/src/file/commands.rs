@@ -1,15 +1,12 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager};
-
+use super::storage;
 use crate::compressors::compress_dir;
 use crate::error::AppError;
-use crate::file::storage::get_storage_dir;
 use crate::file::utils::clean_name;
 use crate::models::{CompressionType, Release, StlModel};
 use crate::settings::SETTINGS_CACHE;
-
-use super::storage::{convert_to_relative_path, get_destination_folder, rename_image};
+use std::fs;
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager};
 
 #[tauri::command]
 #[specta::specta]
@@ -28,7 +25,7 @@ pub async fn save_model(
     };
     let scratch_dir = var_name;
 
-    let release_path = get_storage_dir(&app_handle, scratch_dir, release_dir)?;
+    let release_path = storage::get_dir(&app_handle, release_dir, scratch_dir)?;
 
     let clean_model_name = clean_name(&model.model_name);
     let model_folder = match model.group {
@@ -53,7 +50,7 @@ pub async fn save_model(
 
         for (i, path) in image_paths.iter().enumerate() {
             let source_path = Path::new(path);
-            let new_name = rename_image(clean_model_name, source_path, i);
+            let new_name = storage::rename_image(clean_model_name, source_path, i);
             let destination_path = model_folder.join(&new_name);
 
             fs::copy(source_path, &destination_path)
@@ -73,7 +70,7 @@ pub async fn save_model(
                 .file_name()
                 .ok_or_else(|| AppError::IoError(format!("Invalid file path: {}", path)))?;
 
-            let destination_folder = get_destination_folder(model_folder, source_path);
+            let destination_folder = storage::get_destination_folder(model_folder, source_path);
             let destination_path = destination_folder.join(file_name);
 
             fs::copy(source_path, &destination_path)
@@ -89,7 +86,7 @@ pub async fn save_model(
 
     let mut relative_image_paths = Vec::new();
     for path in &copied_images {
-        let rel_path = convert_to_relative_path(path, &model_folder).map_err(|e| {
+        let rel_path = storage::convert_to_relative_path(path, &model_folder).map_err(|e| {
             AppError::IoError(format!("Failed to convert image path to relative: {}", e))
         })?;
         relative_image_paths.push(rel_path);
@@ -97,7 +94,7 @@ pub async fn save_model(
 
     let mut relative_file_paths = Vec::new();
     for path in &copied_files {
-        let rel_path = convert_to_relative_path(path, &model_folder).map_err(|e| {
+        let rel_path = storage::convert_to_relative_path(path, &model_folder).map_err(|e| {
             AppError::IoError(format!("Failed to convert file path to relative: {}", e))
         })?;
         relative_file_paths.push(rel_path);
@@ -124,7 +121,7 @@ pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<(
     let settings = SETTINGS_CACHE
         .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-    let scratch_dir = get_storage_dir(&app_handle, settings.scratch_dir.clone(), "".to_string())?;
+    let scratch_dir = storage::get_dir(&app_handle, "".to_string(), settings.scratch_dir.clone())?;
 
     let release_name = clean_name(&release.name);
     let designer_name = clean_name(&release.designer);
@@ -160,10 +157,10 @@ pub async fn finalize_release(app_handle: AppHandle, release_name: String) -> Re
         .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
 
-    let scratch_dir = get_storage_dir(
+    let scratch_dir = storage::get_dir(
         &app_handle,
-        settings.scratch_dir.clone(),
         "".to_string(), // Empty string to avoid the "releases" subdirectory
+        settings.scratch_dir.clone(),
     )?;
 
     let entries = fs::read_dir(&scratch_dir)?;

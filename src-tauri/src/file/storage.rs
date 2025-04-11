@@ -1,13 +1,12 @@
+use crate::error::AppError;
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use crate::error::AppError;
 use tauri::{AppHandle, Manager};
 
-pub fn get_storage_dir(
+pub fn get_dir(
     app_handle: &AppHandle,
-    scratch_dir: Option<String>,
     dir_name: String,
+    scratch_dir: Option<String>,
 ) -> Result<PathBuf, AppError> {
     let temp_dir = if let Some(dir) = scratch_dir {
         PathBuf::from(dir).join(dir_name)
@@ -19,6 +18,19 @@ pub fn get_storage_dir(
     fs::create_dir_all(&temp_dir)?;
 
     Ok(temp_dir)
+}
+
+pub fn rename_image(model_name: &str, original_path: &Path, index: usize) -> String {
+    let extension = original_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("");
+
+    if index == 0 {
+        format!("{}-main.{}", model_name, extension)
+    } else {
+        format!("{}-detail_{}.{}", model_name, index, extension)
+    }
 }
 
 pub fn get_destination_folder(model_folder: &Path, file_path: &Path) -> PathBuf {
