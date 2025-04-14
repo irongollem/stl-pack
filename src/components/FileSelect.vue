@@ -47,7 +47,19 @@ const selectPath = async () => {
       });
 
       if (files) {
-        selectedFiles.value = files as SelectedFile[];
+        const newFiles = files as SelectedFile[];
+        if (props.multiple) {
+          const existingFileMap = Object.fromEntries(
+            selectedFiles.value.map((file) => [file.path, file]),
+          );
+          for (const file of newFiles) {
+            if (!existingFileMap[file.path]) {
+              selectedFiles.value.push(file);
+            }
+          }
+        } else {
+          selectedFiles.value = newFiles;
+        }
         emit("update:modelValue", selectedFiles.value);
       }
     }
@@ -121,7 +133,7 @@ const clearFiles = () => {
             <tr v-for="file in selectedFiles" :key="file.path">
               <td class="max-w-[200px] truncate" :title="file.name">{{ file.name }}</td>
               <td>{{ formatFileSize(file.info.size) }}</td>
-              <td>{{ file.type }}</td>
+              <td>{{ file.fileType }}</td>
               <td>
                 <button class="btn btn-error btn-xs" @click="removeFile(file)">
                   Remove
