@@ -55,6 +55,46 @@ pub fn get_destination_folder(model_folder: &Path, file_path: &Path) -> PathBuf 
     }
 }
 
+pub fn copy_images(
+    image_paths: &[String],
+    model_folder: &Path,
+    clean_model_name: &str,
+) -> Result<Vec<String>, AppError> {
+    let mut copied_images = Vec::new();
+
+    for (i, path) in image_paths.iter().enumerate() {
+        let source_path = Path::new(path);
+        let new_name = rename_image(clean_model_name, source_path, i);
+        let destination_path = model_folder.join(&new_name);
+
+        fs::copy(source_path, &destination_path)
+            .map_err(|e| AppError::IoError(format!("failed to copy image; {}", e)))?;
+        copied_images.push(destination_path.to_string_lossy().into_owned());
+    }
+
+    Ok(copied_images)
+}
+
+pub fn copy_files(file_paths: &[String], model_folder: &Path) -> Result<Vec<String>, AppError> {
+    let mut copied_files = Vec::new();
+
+    for path in file_paths {
+        let source_path = Path::new(path);
+        let file_name = source_path
+            .file_name()
+            .ok_or_else(|| AppError::IoError(format!("Invalid file path: {}", path)))?;
+
+        let destination_folder = get_destination_folder(model_folder, source_path);
+        let destination_path = destination_folder.join(file_name);
+
+        fs::copy(source_path, &destination_path)
+            .map_err(|e| AppError::IoError(format!("failed to copy file; {}", e)))?;
+        copied_files.push(destination_path.to_string_lossy().into_owned());
+    }
+
+    Ok(copied_files)
+}
+
 pub fn convert_to_relative_path(absolute_path: &str, base_dir: &Path) -> Result<String, AppError> {
     let base_str = base_dir.to_string_lossy().into_owned();
     let absolute_str = absolute_path.to_string();
@@ -71,4 +111,18 @@ pub fn convert_to_relative_path(absolute_path: &str, base_dir: &Path) -> Result<
             base_dir.display()
         )))
     }
+}
+
+pub fn convert_to_relative_paths(
+    paths: &[String],
+    base_dir: &Path,
+) -> Result<Vec<String>, AppError> {
+    paths
+        .iter()
+        .map(|path| {
+            convert_to_relative_path(path, base_dir).map_err(|e| {
+                AppError::IoError(format!("Failed to convert path to relative: {}", e))
+            })
+        })
+        .collect()
 }

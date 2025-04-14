@@ -35,9 +35,9 @@
         <ModelOverview v-if="release.models.length > 0" />
         <FileSelect
           id="extraFiles"
-          label="Additional content (pdf's etc.)"
+          label="Additional content (licence, pdf's etc.)"
           multiple
-          accept="pdf, zip"
+          accept="pdf, md, zip"
           v-model="extraFiles"
         />
 
@@ -92,6 +92,8 @@ const release = ref<Release>({
   version: "1.0.0",
   models: [],
   release_dir: "",
+  images: [],
+  other_files: [],
 });
 const extraFiles = ref<SelectedFile[]>([]);
 const releaseImages = ref<SelectedFile[]>([]);
@@ -107,6 +109,8 @@ const clearRelease = () => {
     version: "1.0.0",
     models: [],
     release_dir: "",
+    images: [],
+    other_files: [],
   };
   extraFiles.value = [];
   releaseImages.value = [];
@@ -124,7 +128,11 @@ const saveRelease = async () => {
   isStoring.value = true;
   const dirName = formatDirName(release.value);
   release.value.release_dir = dirName;
-  const result = await commands.createRelease(release.value);
+  const result = await commands.createRelease(
+    release.value,
+    releaseImages.value.map((image) => image.path),
+    extraFiles.value.map((file) => file.path),
+  );
   if (result.status === "ok") {
     releasesStore.updateRelease(release.value);
     releasesStore.setActiveTab("addStl");

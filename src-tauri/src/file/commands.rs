@@ -41,64 +41,11 @@ pub async fn save_model(
     fs::create_dir_all(&model_folder)
         .map_err(|e| AppError::IoError(format!("failed to create model folder; {}", e)))?;
 
-    fn copy_images(
-        image_paths: &[String],
-        model_folder: &Path,
-        clean_model_name: &str,
-    ) -> Result<Vec<String>, AppError> {
-        let mut copied_images = Vec::new();
+    let copied_images = storage::copy_images(&image_paths, &model_folder, &clean_model_name)?;
+    let copied_files = storage::copy_files(&file_paths, &model_folder)?;
 
-        for (i, path) in image_paths.iter().enumerate() {
-            let source_path = Path::new(path);
-            let new_name = storage::rename_image(clean_model_name, source_path, i);
-            let destination_path = model_folder.join(&new_name);
-
-            fs::copy(source_path, &destination_path)
-                .map_err(|e| AppError::IoError(format!("failed to copy image; {}", e)))?;
-            copied_images.push(destination_path.to_string_lossy().into_owned());
-        }
-
-        Ok(copied_images)
-    }
-
-    fn copy_files(file_paths: &[String], model_folder: &Path) -> Result<Vec<String>, AppError> {
-        let mut copied_files = Vec::new();
-
-        for path in file_paths {
-            let source_path = Path::new(path);
-            let file_name = source_path
-                .file_name()
-                .ok_or_else(|| AppError::IoError(format!("Invalid file path: {}", path)))?;
-
-            let destination_folder = storage::get_destination_folder(model_folder, source_path);
-            let destination_path = destination_folder.join(file_name);
-
-            fs::copy(source_path, &destination_path)
-                .map_err(|e| AppError::IoError(format!("failed to copy file; {}", e)))?;
-            copied_files.push(destination_path.to_string_lossy().into_owned());
-        }
-
-        Ok(copied_files)
-    }
-
-    let copied_images = copy_images(&image_paths, &model_folder, &clean_model_name)?;
-    let copied_files = copy_files(&file_paths, &model_folder)?;
-
-    let mut relative_image_paths = Vec::new();
-    for path in &copied_images {
-        let rel_path = storage::convert_to_relative_path(path, &model_folder).map_err(|e| {
-            AppError::IoError(format!("Failed to convert image path to relative: {}", e))
-        })?;
-        relative_image_paths.push(rel_path);
-    }
-
-    let mut relative_file_paths = Vec::new();
-    for path in &copied_files {
-        let rel_path = storage::convert_to_relative_path(path, &model_folder).map_err(|e| {
-            AppError::IoError(format!("Failed to convert file path to relative: {}", e))
-        })?;
-        relative_file_paths.push(rel_path);
-    }
+    let relative_image_paths = storage::convert_to_relative_paths(&copied_images, &model_folder)?;
+    let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &model_folder)?;
 
     let model_with_relative_paths = StlModel {
         model_name: model.model_name,
@@ -117,7 +64,12 @@ pub async fn save_model(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<String, AppError> {
+pub async fn create_release(
+    app_handle: AppHandle,
+    release: Release,
+    image_paths: Vec<String>,
+    other_file_paths: Vec<String>,
+) -> Result<String, AppError> {
     let settings = SETTINGS_CACHE
         .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
@@ -143,12 +95,27 @@ pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<S
 
     fs::create_dir_all(&release_dir)?;
 
-    let release_json = serde_json::to_string_pretty(&release)?;
+    let copied_images = storage::copy_images(&image_paths, &release_dir, &release_name)?;
+    let copied_files = storage::copy_files(&other_file_paths, &release_dir)?;
+
+    let relative_image_paths = storage::convert_to_relative_paths(&copied_images, &release_dir)?;
+    let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &release_dir)?;
+
+    let release_with_paths = Release {
+        images: relative_image_paths,
+        other_files: relative_file_paths,
+        ..release
+    };
+
+    let release_json = serde_json::to_string_pretty(&release_with_paths)?;
 
     fs::write(&release_dir.join("release.json"), release_json)?;
 
     if let Some(window) = app_handle.get_webview_window("main") {
-        window.set_title(&format!("STL-Pack - Creating release: {}", release.name))?;
+        window.set_title(&format!(
+            "STL-Pack - Creating release: {}",
+            release_with_paths.name
+        ))?;
     }
 
     Ok(release_dir.to_string_lossy().into_owned())

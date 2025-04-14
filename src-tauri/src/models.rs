@@ -10,6 +10,8 @@ pub struct Release {
     pub version: String,
     pub models: Vec<String>,
     pub release_dir: String,
+    pub images: Vec<String>,
+    pub other_files: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
