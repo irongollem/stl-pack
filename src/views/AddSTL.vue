@@ -16,7 +16,7 @@
 
         <TagInput id="tags" v-model="model.tags" label="Tags" placeholder="Write tags here..." />
 
-        <FileInput
+        <FileSelect
             id="model-files"
             label="Model Files"
             multiple
@@ -52,7 +52,7 @@
     </template>
 
     <template #right>
-      <ImagePreview v-model="images" />
+      <ImageSelect v-model="images" />
     </template>
   </View>
   </form>
@@ -67,10 +67,11 @@ import type { Ref } from "vue";
 import { fileLogos } from "../types.ts";
 import View from "../components/View.vue";
 import { commands, type StlModel } from "../bindings.ts";
-import ImagePreview from "../components/ImagePreview.vue";
+import ImageSelect from "../components/ImageSelect.vue";
 import { useToastStore } from "../stores/toastStore.ts";
 import { useReleasesStore } from "../stores/releasesStore.ts";
 import type { SelectedFile } from "../composables/useFileSelect";
+import FileSelect from "../components/FileSelect.vue";
 
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();

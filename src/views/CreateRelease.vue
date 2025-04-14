@@ -60,7 +60,7 @@
       </template>
 
       <template #right>
-        <ImagePreview v-model="releaseImages" />
+        <ImageSelect v-model="releaseImages" />
       </template>
     </View>
   </form>
@@ -68,16 +68,18 @@
 
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { openPath } from "@tauri-apps/plugin-opener";
+
+import { commands, type Release } from "../bindings";
 import TextInput from "../components/TextInput.vue";
 import MonthYearInput from "../components/MonthYearInput.vue";
 import TextArea from "../components/TextArea.vue";
 import View from "../components/View.vue";
-import ImagePreview from "../components/ImagePreview.vue";
-import { commands, type Release } from "../bindings";
-import { useToastStore } from "../stores/toastStore.ts";
-import { useReleasesStore } from "../stores/releasesStore.ts";
+import ImageSelect from "../components/ImageSelect.vue";
 import ModelOverview from "../components/ModelOverview.vue";
 import FileSelect from "../components/FileSelect.vue";
+import { useToastStore } from "../stores/toastStore.ts";
+import { useReleasesStore } from "../stores/releasesStore.ts";
 import type { SelectedFile } from "../composables/useFileSelect";
 
 const toastStore = useToastStore();
@@ -126,6 +128,8 @@ const saveRelease = async () => {
   if (result.status === "ok") {
     releasesStore.updateRelease(release.value);
     releasesStore.setActiveTab("addStl");
+    // TODO: Check if this works, possibly sends back a relative path
+    await openPath(result.data);
   } else {
     toastStore.addToast(
       `Failed to create release: ${result.error}`,
