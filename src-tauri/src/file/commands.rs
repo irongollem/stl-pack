@@ -117,7 +117,7 @@ pub async fn save_model(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<(), AppError> {
+pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<String, AppError> {
     let settings = SETTINGS_CACHE
         .lock()
         .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
@@ -147,7 +147,11 @@ pub async fn create_release(app_handle: AppHandle, release: Release) -> Result<(
 
     fs::write(&release_dir.join("release.json"), release_json)?;
 
-    Ok(())
+    if let Some(window) = app_handle.get_webview_window("main") {
+        window.set_title(&format!("STL-Pack - Creating release: {}", release.name))?;
+    }
+
+    Ok(release_dir.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
