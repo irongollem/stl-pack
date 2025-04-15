@@ -57,12 +57,17 @@ export const useReleasesStore = defineStore("releases", () => {
     models.value = [];
   };
 
+  const setReleaseDir = (dir: string) => {
+    releaseDir.value = dir;
+  };
+
   return {
     activeTab,
     setActiveTab,
     release,
     releaseDir,
     releaseExists,
+    setReleaseDir,
     updateRelease,
     models,
     modelCount,

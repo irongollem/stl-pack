@@ -1,9 +1,37 @@
 use crate::error::AppError;
 use crate::models::CompressionType;
+use crate::settings::SETTINGS_CACHE;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
+
+pub fn get_compression_type() -> Result<CompressionType, AppError> {
+    let compression_type = {
+        SETTINGS_CACHE
+            .lock()
+            .map_err(|e| AppError::ConfigError(format!("{}", e)))?
+            .compression_type
+            .clone()
+    };
+    match compression_type {
+        Some(comp) => Ok(comp),
+        None => Err(AppError::ConfigError(
+            "Compression type not set".to_string(),
+        )),
+    }
+}
+
+pub fn get_chunk_size() -> Result<Option<u32>, AppError> {
+    let chunk_size = {
+        SETTINGS_CACHE
+            .lock()
+            .map_err(|e| AppError::ConfigError(format!("{}", e)))?
+            .chunk_size
+            .clone()
+    };
+    Ok(chunk_size)
+}
 
 fn get_7zip_path<R: tauri::Runtime>(app_handle: &AppHandle<R>) -> Result<PathBuf, AppError> {
     let resource_path = app_handle.path().resource_dir()?;
@@ -34,8 +62,6 @@ pub fn compress_dir(
     source_dir: &Path,
     target_path: &Path,
     app_handle: &AppHandle,
-    compression_type: CompressionType,
-    chunk_size: Option<u32>,
 ) -> Result<(), AppError> {
     let binary_path = get_7zip_path(app_handle)?;
 
@@ -64,6 +90,7 @@ pub fn compress_dir(
         .arg("-mx=9") // Set compression level to maximum
         .arg("-bs=o"); // Set output stream to stdout
 
+    let compression_type = get_compression_type()?;
     // Set format based on compression type
     match compression_type {
         CompressionType::Zip => {
@@ -80,6 +107,7 @@ pub fn compress_dir(
         }
     }
 
+    let chunk_size = get_chunk_size()?;
     // Add split size parameter if needed
     if let Some(size) = chunk_size {
         if size > 0 {

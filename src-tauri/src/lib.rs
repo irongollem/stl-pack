@@ -1,4 +1,3 @@
-mod compressors;
 mod error;
 mod file;
 mod image;

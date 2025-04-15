@@ -1,9 +1,7 @@
-use super::storage;
-use crate::compressors::compress_dir;
+use super::{compressors, storage};
 use crate::error::AppError;
 use crate::file::utils::clean_name;
-use crate::models::{CompressionType, Release, StlModel};
-use crate::settings::SETTINGS_CACHE;
+use crate::models::{Release, StlModel};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -11,21 +9,12 @@ use tauri::{AppHandle, Manager};
 #[tauri::command]
 #[specta::specta]
 pub async fn save_model(
-    app_handle: AppHandle,
     model: StlModel,
     release_dir: String,
     file_paths: Vec<String>,
     image_paths: Vec<String>,
 ) -> Result<StlModel, AppError> {
-    let var_name = {
-        let settings = SETTINGS_CACHE
-            .lock()
-            .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-        settings.scratch_dir.clone()
-    };
-    let scratch_dir = var_name;
-
-    let release_path = storage::get_dir(&app_handle, release_dir, scratch_dir)?;
+    let release_path = PathBuf::from(release_dir);
 
     let clean_model_name = clean_name(&model.model_name);
     let model_folder = match model.group {
@@ -70,11 +59,6 @@ pub async fn create_release(
     image_paths: Vec<String>,
     other_file_paths: Vec<String>,
 ) -> Result<String, AppError> {
-    let settings = SETTINGS_CACHE
-        .lock()
-        .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-    let scratch_dir = storage::get_dir(&app_handle, "".to_string(), settings.scratch_dir.clone())?;
-
     let release_name = clean_name(&release.name);
     let designer_name = clean_name(&release.designer);
 
@@ -87,19 +71,13 @@ pub async fn create_release(
     };
 
     let release_dir_name = format!("{}-{}-{}", designer_name, release_date, release_name);
-    let release_dir = scratch_dir.join(&release_dir_name);
+    let release_path = storage::create_dir_on_scratch(&app_handle, release_dir_name)?;
 
-    if release_dir.exists() {
-        fs::remove_dir_all(&release_dir)?;
-    }
+    let copied_images = storage::copy_images(&image_paths, &release_path, &release_name)?;
+    let copied_files = storage::copy_files(&other_file_paths, &release_path)?;
 
-    fs::create_dir_all(&release_dir)?;
-
-    let copied_images = storage::copy_images(&image_paths, &release_dir, &release_name)?;
-    let copied_files = storage::copy_files(&other_file_paths, &release_dir)?;
-
-    let relative_image_paths = storage::convert_to_relative_paths(&copied_images, &release_dir)?;
-    let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &release_dir)?;
+    let relative_image_paths = storage::convert_to_relative_paths(&copied_images, &release_path)?;
+    let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &release_path)?;
 
     let release_with_paths = Release {
         images: relative_image_paths,
@@ -109,7 +87,7 @@ pub async fn create_release(
 
     let release_json = serde_json::to_string_pretty(&release_with_paths)?;
 
-    fs::write(&release_dir.join("release.json"), release_json)?;
+    fs::write(&release_path.join("release.json"), release_json)?;
 
     if let Some(window) = app_handle.get_webview_window("main") {
         window.set_title(&format!(
@@ -118,21 +96,13 @@ pub async fn create_release(
         ))?;
     }
 
-    Ok(release_dir.to_string_lossy().into_owned())
+    Ok(release_path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
 #[specta::specta]
 pub async fn finalize_release(app_handle: AppHandle, release_name: String) -> Result<(), AppError> {
-    let settings = SETTINGS_CACHE
-        .lock()
-        .map_err(|e| AppError::ConfigError(format!("{}", e)))?;
-
-    let scratch_dir = storage::get_dir(
-        &app_handle,
-        "".to_string(), // Empty string to avoid the "releases" subdirectory
-        settings.scratch_dir.clone(),
-    )?;
+    let scratch_dir = storage::get_scratch_path(&app_handle)?;
 
     let entries = fs::read_dir(&scratch_dir)?;
     let release_dir = entries
@@ -142,32 +112,17 @@ pub async fn finalize_release(app_handle: AppHandle, release_name: String) -> Re
         .ok_or_else(|| AppError::NotFoundError(format!("Release '{}' not found", release_name)))?
         .path();
 
-    let target_dir = if let Some(dir) = &settings.target_dir {
-        PathBuf::from(dir)
-    } else {
-        app_handle.path().app_data_dir()?.join("exports")
-    };
-
-    fs::create_dir_all(&target_dir)?;
+    let target_dir = storage::get_target_path(&app_handle)?;
 
     let release_dir_name = release_dir
         .file_name()
         .ok_or_else(|| AppError::ConfigError("Invalid release directory name".to_string()))?
         .to_string_lossy()
-        .to_string();
+        .to_owned();
 
     let archive_path = target_dir.join(format!("{}.zip", release_dir_name));
 
-    compress_dir(
-        &release_dir,
-        &archive_path,
-        &app_handle,
-        settings
-            .compression_type
-            .clone()
-            .unwrap_or(CompressionType::Zip),
-        settings.chunk_size,
-    )?;
+    compressors::compress_dir(&release_dir, &archive_path, &app_handle)?;
 
     fs::remove_dir_all(&release_dir)
         .map_err(|e| AppError::IoError(format!("Failed to clean up release directory: {}", e)))?;

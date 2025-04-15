@@ -142,6 +142,7 @@ const saveRelease = async () => {
   );
   if (result.status === "ok") {
     releasesStore.updateRelease(release.value);
+    releasesStore.setReleaseDir(result.data);
     releasesStore.setActiveTab("addStl");
     if (openOnSafe.value) {
       await openPath(result.data);

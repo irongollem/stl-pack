@@ -1,23 +1,51 @@
 use crate::error::AppError;
+use crate::settings::SETTINGS_CACHE;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-pub fn get_dir(
+pub fn get_scratch_path(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
+    let scratch_dir = {
+        SETTINGS_CACHE
+            .lock()
+            .map_err(|e| AppError::ConfigError(format!("{}", e)))?
+            .scratch_dir
+            .clone()
+    };
+
+    if let Some(dir) = scratch_dir {
+        Ok(PathBuf::from(dir))
+    } else {
+        Ok(app_handle.path().app_data_dir()?)
+    }
+}
+
+pub fn create_dir_on_scratch(
     app_handle: &AppHandle,
     dir_name: String,
-    scratch_dir: Option<String>,
 ) -> Result<PathBuf, AppError> {
-    let temp_dir = if let Some(dir) = scratch_dir {
-        PathBuf::from(dir).join(dir_name)
-    } else {
-        let app_dir = app_handle.path().app_data_dir()?;
-        app_dir.join(dir_name)
-    };
+    let scratch_root = get_scratch_path(app_handle)?;
+    let temp_dir = scratch_root.join(dir_name);
 
     fs::create_dir_all(&temp_dir)?;
 
     Ok(temp_dir)
+}
+
+pub fn get_target_path(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
+    let target_dir = {
+        SETTINGS_CACHE
+            .lock()
+            .map_err(|e| AppError::ConfigError(format!("{}", e)))?
+            .target_dir
+            .clone()
+    };
+
+    if let Some(dir) = target_dir {
+        Ok(PathBuf::from(dir))
+    } else {
+        Ok(app_handle.path().app_data_dir()?.join("exports"))
+    }
 }
 
 pub fn rename_image(model_name: &str, original_path: &Path, index: usize) -> String {
