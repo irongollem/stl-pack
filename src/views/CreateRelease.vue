@@ -32,7 +32,7 @@
           placeholder="Enter the description (Optional)..."
           v-model="release.description"
         />
-        <ModelOverview v-if="release.models.length > 0" />
+        <ModelOverview v-if="release.model_references.length > 0" />
         <FileSelect
           id="extraFiles"
           label="Additional content (licence, pdf's etc.)"
@@ -97,7 +97,8 @@ const release = ref<Release>({
   description: "",
   date: "",
   version: "1.0.0",
-  models: [],
+  model_references: [],
+  groups: [],
   release_dir: "",
   images: [],
   other_files: [],
@@ -114,7 +115,8 @@ const clearRelease = () => {
     description: "",
     date: "",
     version: "1.0.0",
-    models: [],
+    model_references: [],
+    groups: [],
     release_dir: "",
     images: [],
     other_files: [],

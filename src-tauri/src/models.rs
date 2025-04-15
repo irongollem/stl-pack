@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct Settings {
@@ -24,15 +25,31 @@ pub struct Release {
     pub description: String,
     pub date: String,
     pub version: String,
-    pub models: Vec<String>,
+    pub model_references: Vec<ModelReference>,
+    pub groups: Vec<String>,
     pub release_dir: String,
     pub images: Vec<String>,
     pub other_files: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub enum ModelLocation {
+    Local(String),
+    External(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ModelReference {
+    #[specta(type = String)]
+    pub id: Uuid,
+    pub location: ModelLocation,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct StlModel {
-    pub model_name: String,
+    #[specta(type = String)]
+    pub id: Uuid,
+    pub name: String,
     pub description: Option<String>,
     pub tags: Vec<String>,
     pub images: Vec<String>, // the path of the temporary location of the image during archive creation

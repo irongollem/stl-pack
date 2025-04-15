@@ -1,3 +1,4 @@
+use super::writer;
 use super::{compressors, storage};
 use crate::error::AppError;
 use crate::file::utils::clean_name;
@@ -5,6 +6,7 @@ use crate::models::{Release, StlModel};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
+use uuid::Uuid;
 
 #[tauri::command]
 #[specta::specta]
@@ -13,15 +15,14 @@ pub async fn add_model(
     release_dir: String,
     file_paths: Vec<String>,
     image_paths: Vec<String>,
-) -> Result<StlModel, AppError> {
+) -> Result<(StlModel, String), AppError> {
     let release_path = PathBuf::from(release_dir);
 
-    let clean_model_name = clean_name(&model.model_name);
+    let clean_model_name = clean_name(&model.name);
     let model_folder = match model.group {
         Some(ref group_name) => {
             let clean_group_name = clean_name(group_name);
             let group_dir = release_path.join(&clean_group_name);
-            fs::create_dir_all(&group_dir)?;
             group_dir.join(&clean_model_name)
         }
         None => release_path.join(&clean_model_name),
@@ -37,18 +38,24 @@ pub async fn add_model(
     let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &model_folder)?;
 
     let model_with_relative_paths = StlModel {
-        model_name: model.model_name,
+        id: Uuid::new_v4(),
+        name: clean_model_name,
         description: model.description,
         tags: model.tags,
-        group: model.group,
+        group: model.group.clone(),
         images: relative_image_paths,
         model_files: relative_file_paths,
     };
 
+    let model_json_path = model_folder.join("model.json");
     let model_json = serde_json::to_string_pretty(&model_with_relative_paths)?;
-    fs::write(&model_folder.join("model.json"), model_json)?;
+    writer::write_json(model_json, model_json_path.clone())?;
+    writer::add_model_to_release_json(release_path, &model_with_relative_paths)?;
 
-    Ok(model_with_relative_paths)
+    Ok((
+        model_with_relative_paths,
+        model_json_path.to_string_lossy().into_owned(),
+    ))
 }
 
 #[tauri::command]

@@ -1,7 +1,11 @@
-// src/stores/releasesStore.ts
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
-import type { Release, StlModel } from "../bindings";
+import type {
+  ModelLocation,
+  ModelReference,
+  Release,
+  StlModel,
+} from "../bindings";
 import { useToastStore } from "./toastStore.ts";
 
 export type Tab = "settings" | "release" | "addStl" | "finalize";
@@ -20,7 +24,7 @@ export const useReleasesStore = defineStore("releases", () => {
   const updateRelease = (newRelease: Release) => {
     release.value = {
       ...newRelease,
-      models: [...(newRelease.models || [])],
+      model_references: [...(newRelease.model_references || [])],
     };
   };
 
@@ -34,26 +38,30 @@ export const useReleasesStore = defineStore("releases", () => {
     }
 
     models.value.push(model);
-    release.value.models.push(path);
+    release.value.model_references.push(<ModelReference>{
+      id: model.id,
+      location: <ModelLocation>{ Local: path },
+    });
   };
 
   const removeModel = (model: StlModel) => {
-    if (!release.value || !release.value.models || !models.value) return;
+    if (!release.value || !release.value.model_references || !models.value)
+      return;
 
-    const index = models.value.findIndex(
-      (m) => m.model_name === model.model_name,
-    );
+    const index = models.value.findIndex((m) => m.name === model.name);
     if (index !== -1) {
       models.value.splice(index, 1);
-      release.value.models.splice(index, 1);
+      release.value.model_references.splice(index, 1);
     }
   };
 
-  const modelCount = computed(() => release.value?.models?.length || 0);
+  const modelCount = computed(
+    () => release.value?.model_references?.length || 0,
+  );
 
   const clearModels = () => {
     if (!release.value) return;
-    release.value.models = [];
+    release.value.model_references = [];
     models.value = [];
   };
 

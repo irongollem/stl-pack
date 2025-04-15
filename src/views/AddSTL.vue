@@ -5,7 +5,7 @@
       <h1 class="text-xl font-bold">Model info</h1>
         <TextInput
             id="model-name"
-            v-model="model.model_name"
+            v-model="model.name"
             label="Model Name"
             placeholder="Enter model name..."
         />
@@ -22,7 +22,7 @@
             multiple
             accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode"
             v-model="modelFiles"
-            :enabled="model.model_name.length > 0"
+            :enabled="model.name.length > 0"
         />
 
         <ul v-if="model.model_files.length > 0" class="list">
@@ -76,7 +76,8 @@ import FileSelect from "../components/FileSelect.vue";
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();
 const model: Ref<StlModel> = ref({
-  model_name: "",
+  id: "",
+  name: "",
   description: "",
   tags: [],
   images: [],
@@ -90,9 +91,7 @@ const isStoring = ref(false);
 
 const formComplete = computed(
   () =>
-    model.value.model_name &&
-    modelFiles.value.length > 0 &&
-    images.value.length > 0,
+    model.value.name && modelFiles.value.length > 0 && images.value.length > 0,
 );
 
 const saveModelData = async () => {
@@ -102,24 +101,23 @@ const saveModelData = async () => {
   }
 
   try {
-    // Make sure releaseDirectoryName is available
     if (!releasesStore.releaseDir) {
       throw new Error("Release directory name is missing");
     }
 
-    const savedModel = await commands.saveModel(
+    const savedModelTupleResult = await commands.addModel(
       model.value,
       releasesStore.releaseDir,
       modelFiles.value.map((f) => f.path),
       images.value.map((f) => f.path),
     );
-    if (savedModel.status === "ok") {
+    if (savedModelTupleResult.status === "ok") {
       toastStore.addToast("Model saved successfully", "success");
-      releasesStore.addModel(savedModel.data, "FIXME: im a placeholder");
+      releasesStore.addModel(...savedModelTupleResult.data);
       clearModel();
     } else {
       toastStore.addToast(
-        `Failed to save model: ${savedModel.error}`,
+        `Failed to save model: ${savedModelTupleResult.error}`,
         "error",
         0,
       );
@@ -133,7 +131,8 @@ const saveModelData = async () => {
 
 const clearModel = () => {
   model.value = {
-    model_name: "",
+    id: "",
+    name: "",
     description: "",
     tags: [],
     images: [],

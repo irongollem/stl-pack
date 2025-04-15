@@ -4278,6 +4278,7 @@ dependencies = [
  "tauri-plugin-os",
  "tauri-plugin-store",
  "tauri-specta",
+ "uuid",
  "zip",
 ]
 
