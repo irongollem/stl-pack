@@ -8,7 +8,7 @@ use tauri::{AppHandle, Manager};
 
 #[tauri::command]
 #[specta::specta]
-pub async fn save_model(
+pub async fn add_model(
     model: StlModel,
     release_dir: String,
     file_paths: Vec<String>,

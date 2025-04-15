@@ -4,7 +4,7 @@ mod image;
 mod models;
 mod settings;
 
-use crate::file::commands::{create_release, finalize_release, save_model};
+use crate::file::commands::{add_model, create_release, finalize_release};
 use specta_typescript::Typescript;
 #[allow(unused_imports)]
 use tauri_plugin_fs::FsExt;
@@ -13,7 +13,7 @@ use tauri_specta::{collect_commands, Builder};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = Builder::<tauri::Wry>::new().commands(collect_commands![
-        save_model,
+        add_model,
         create_release,
         finalize_release,
         settings::get_settings,
@@ -42,7 +42,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            save_model,
+            add_model,
             create_release,
             finalize_release,
             settings::get_settings,
