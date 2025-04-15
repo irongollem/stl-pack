@@ -47,8 +47,8 @@ pub struct ModelReference {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct StlModel {
-    #[specta(type = String)]
-    pub id: Uuid,
+    #[specta(type = Option<String>)]
+    pub id: Option<Uuid>,
     pub name: String,
     pub description: Option<String>,
     pub tags: Vec<String>,

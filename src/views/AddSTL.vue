@@ -76,9 +76,9 @@ import FileSelect from "../components/FileSelect.vue";
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();
 const model: Ref<StlModel> = ref({
-  id: "",
+  id: null,
   name: "",
-  description: "",
+  description: null,
   tags: [],
   images: [],
   model_files: [],
@@ -117,7 +117,7 @@ const saveModelData = async () => {
       clearModel();
     } else {
       toastStore.addToast(
-        `Failed to save model: ${savedModelTupleResult.error}`,
+        `Failed to save model: ${JSON.stringify(savedModelTupleResult.error)}`,
         "error",
         0,
       );
@@ -131,13 +131,13 @@ const saveModelData = async () => {
 
 const clearModel = () => {
   model.value = {
-    id: "",
+    id: null,
     name: "",
-    description: "",
+    description: null,
     tags: [],
     images: [],
     model_files: [],
-    group: "",
+    group: null,
   };
   images.value = [];
   modelFiles.value = [];

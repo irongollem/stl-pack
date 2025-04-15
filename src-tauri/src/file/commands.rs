@@ -37,8 +37,9 @@ pub async fn add_model(
     let relative_image_paths = storage::convert_to_relative_paths(&copied_images, &model_folder)?;
     let relative_file_paths = storage::convert_to_relative_paths(&copied_files, &model_folder)?;
 
+    let model_id = model.id.unwrap_or(Uuid::new_v4());
     let model_with_relative_paths = StlModel {
-        id: Uuid::new_v4(),
+        id: Some(model_id),
         name: clean_model_name,
         description: model.description,
         tags: model.tags,
