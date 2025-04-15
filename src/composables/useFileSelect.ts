@@ -21,7 +21,6 @@ export interface FileFilter {
 export function useFileSelect() {
   const selectedFiles = ref<SelectedFile[]>([]);
 
-  // Create filters based on accepted file types
   const createFiltersFromAccept = (
     accept: string,
   ): FileFilter[] | undefined => {
@@ -136,7 +135,7 @@ export function useFileSelect() {
         }
       }
 
-      return files.length > 0 ? files : null;
+      return files;
     } catch (error) {
       console.error("Selection failed:", error);
       return null;

@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ref } from "vue";
 import { useFileSelect, type SelectedFile } from "../composables/useFileSelect";
 
 const props = defineProps<{
   id: string;
   label: string;
-  modelValue?: string | SelectedFile[] | null;
+  modelValue: string | SelectedFile[] | null;
   tooltip?: string;
   dirMode?: boolean;
   multiple?: boolean;
@@ -18,15 +17,14 @@ const emit = defineEmits<{
 }>();
 
 const { selectFiles, selectDirectory, formatFileSize } = useFileSelect();
-const selectedFiles = ref<SelectedFile[]>([]);
+// const selectedFiles = ref<SelectedFile[]>([]);
 
-if (!props.dirMode && Array.isArray(props.modelValue)) {
-  selectedFiles.value = props.modelValue;
-}
+
 
 const fileCountText = computed(() => {
-  if (props.dirMode || !selectedFiles.value.length) return "";
-  return `${selectedFiles.value.length} file${selectedFiles.value.length > 1 ? "s" : ""} selected`;
+  if (props.dirMode || !props.modelValue?.length) return "";
+  const modelCount = props.modelValue.length;
+  return `${modelCount} file${modelCount > 1 ? "s" : ""} selected`;
 });
 
 const selectPath = async () => {
@@ -47,20 +45,13 @@ const selectPath = async () => {
       });
 
       if (files) {
+        const selectedFiles = props.modelValue as SelectedFile[];
         const newFiles = files as SelectedFile[];
         if (props.multiple) {
-          const existingFileMap = Object.fromEntries(
-            selectedFiles.value.map((file) => [file.path, file]),
-          );
-          for (const file of newFiles) {
-            if (!existingFileMap[file.path]) {
-              selectedFiles.value.push(file);
-            }
-          }
+          emit("update:modelValue", [...selectedFiles, ...newFiles]);
         } else {
-          selectedFiles.value = newFiles;
+          emit("update:modelValue", newFiles);
         }
-        emit("update:modelValue", selectedFiles.value);
       }
     }
   } catch (error) {
@@ -69,13 +60,14 @@ const selectPath = async () => {
 };
 
 const removeFile = (file: SelectedFile) => {
-  selectedFiles.value = selectedFiles.value.filter((f) => f.path !== file.path);
-  emit("update:modelValue", selectedFiles.value);
+  const newSet = (props.modelValue as SelectedFile[]).filter(
+    (f) => f.path !== file.path,
+  );
+  emit("update:modelValue", newSet);
 };
 
 const clearFiles = () => {
-  selectedFiles.value = [];
-  emit("update:modelValue", selectedFiles.value);
+  emit("update:modelValue", []);
 };
 </script>
 
@@ -114,12 +106,12 @@ const clearFiles = () => {
           </svg>
           Select Files
         </button>
-        <span class="text-sm opacity-70" v-if="selectedFiles.length">
+        <span class="text-sm opacity-70" v-if="modelValue?.length">
           {{ fileCountText }}
         </span>
       </div>
 
-      <div class="overflow-x-auto" v-if="selectedFiles.length">
+      <div class="overflow-x-auto" v-if="!dirMode && modelValue?.length">
         <table class="table table-xs w-full">
           <thead>
             <tr>
@@ -130,7 +122,7 @@ const clearFiles = () => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="file in selectedFiles" :key="file.path">
+            <tr v-for="file in modelValue as SelectedFile[]" :key="file.path">
               <td class="max-w-[200px] truncate" :title="file.name">{{ file.name }}</td>
               <td>{{ formatFileSize(file.info.size) }}</td>
               <td>{{ file.fileType }}</td>

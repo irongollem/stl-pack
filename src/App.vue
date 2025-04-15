@@ -4,45 +4,26 @@ import CreateRelease from "./views/CreateRelease.vue";
 import Settings from "./views/Settings.vue";
 import ToastContainer from "./components/ToastContainer.vue";
 import { useReleasesStore } from "./stores/releasesStore";
-import { useToastStore } from "./stores/toastStore.ts";
-import { commands } from "./bindings.ts";
 
+import Finalize from "./views/Finalize.vue";
+
+import { computed } from "vue";
 const releasesStore = useReleasesStore();
-const toastStore = useToastStore();
 
-const finalizeRelease = async () => {
-  if (releasesStore.release) {
-    try {
-      const result = await commands.finalizeRelease(
-        releasesStore.release.release_dir,
-      );
-      if (result.status === "ok") {
-        toastStore.addToast(
-          "Release finalized and exported successfully",
-          "success",
-        );
-      } else {
-        console.error("Finalize release failed:", result.error);
-        toastStore.addToast(
-          `Failed to finalize release: ${
-            typeof result.error === "string"
-              ? result.error
-              : JSON.stringify(result.error)
-          }`,
-          "error",
-          0,
-        );
-      }
-    } catch (error) {
-      console.error("Finalize exception:", error);
-      toastStore.addToast(
-        `Exception during finalization: ${error}`,
-        "error",
-        0,
-      );
-    }
+const currentTabComponent = computed(() => {
+  switch (releasesStore.activeTab) {
+    case "settings":
+      return Settings;
+    case "release":
+      return CreateRelease;
+    case "addStl":
+      return AddSTL;
+    case "finalize":
+      return Finalize;
+    default:
+      return CreateRelease;
   }
-};
+});
 </script>
 
 <template>
@@ -56,6 +37,7 @@ const finalizeRelease = async () => {
                 :class="{
                     'tab-active': releasesStore.activeTab === 'settings',
                 }"
+                :checked="releasesStore.activeTab === 'settings'"
                 @change="releasesStore.setActiveTab('settings')"
                 aria-label="⚙️"
             />
@@ -72,9 +54,9 @@ const finalizeRelease = async () => {
                 <input
                     type="radio"
                     name="release"
+                    :checked="releasesStore.activeTab === 'release'"
                     @change="releasesStore.setActiveTab('release')"
                     aria-label="Release"
-                    checked
                 />
             </label>
 
@@ -83,6 +65,7 @@ const finalizeRelease = async () => {
                 name="release"
                 class="tab"
                 :class="{ 'tab-active': releasesStore.activeTab === 'addStl' }"
+                :checked="releasesStore.activeTab === 'addStl'"
                 @change="releasesStore.setActiveTab('addStl')"
                 aria-label="Add STL"
                 :disabled="!releasesStore.releaseExists"
@@ -95,51 +78,22 @@ const finalizeRelease = async () => {
                 :class="{
                     'tab-active': releasesStore.activeTab === 'finalize',
                 }"
+                :checked="releasesStore.activeTab === 'finalize'"
                 @change="releasesStore.setActiveTab('finalize')"
                 aria-label="Finalize"
-                :disabled="!releasesStore.releaseExists"
+                :disabled="!releasesStore.releaseExists || !releasesStore.models.length"
             />
         </div>
 
-        <!-- Tab content container - Reduced height to give space for rounded corners -->
         <div class="h-[calc(100vh-2rem)] overflow-hidden pb-4">
-            <!-- Settings tab -->
-            <div
-                v-if="releasesStore.activeTab === 'settings'"
-                class="h-[calc(100%-1rem)] bg-gray-800 rounded-b-2xl overflow-hidden"
-            >
-                <Settings />
-            </div>
-
-            <!-- Release tab -->
-            <div
-                v-if="releasesStore.activeTab === 'release'"
-                class="h-[calc(100%-1rem)] bg-gray-800 rounded-b-2xl overflow-hidden"
-            >
-                <CreateRelease />
-            </div>
-
-            <!-- AddSTL tab -->
-            <div
-                v-if="releasesStore.activeTab === 'addStl'"
-                class="h-[calc(100%-1rem)] bg-gray-800 rounded-b-2xl overflow-hidden"
-            >
-                <AddSTL />
-            </div>
-
-            <!-- Finalize tab -->
-            <div
-                v-if="releasesStore.activeTab === 'finalize'"
-                class="h-[calc(100%-1rem)] bg-gray-800 rounded-b-2xl p-8"
-            >
-                <button
-                    class="btn btn-success"
-                    @click="finalizeRelease"
-                    :disabled="!releasesStore.modelCount"
-                >
-                    Finalize & Export Release
-                </button>
-            </div>
+          <div class="h-[calc(100%-1rem)] bg-gray-800 rounded-b-2xl overflow-hidden">
+                          <KeepAlive>
+                              <component
+                                  :is="currentTabComponent"
+                                  class="h-full"
+                              />
+                          </KeepAlive>
+                      </div>
         </div>
     </div>
 

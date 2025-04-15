@@ -20,7 +20,7 @@
             id="model-files"
             label="Model Files"
             multiple
-            accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode,.png"
+            accept=".stl,.obj,.chitubox,.lys,.3mf,.blend,.gcode"
             v-model="modelFiles"
             :enabled="model.model_name.length > 0"
         />
@@ -47,7 +47,7 @@
             </template>
             <span v-else>Save Model</span>
           </button>
-          <button class="btn btn-error" @click="clearModel">Clear Model</button>
+          <button class="btn btn-error" type="button" @click="clearModel">Clear Model</button>
         </div>
     </template>
 
