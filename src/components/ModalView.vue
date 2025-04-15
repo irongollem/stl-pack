@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from "vue";
+import { onMounted, onBeforeUnmount } from "vue";
 
 const props = defineProps<{
   isOpen: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: "close", value: boolean): void;
+  close: [value: boolean];
 }>();
 
 // Add keyboard support to close modal with Escape key

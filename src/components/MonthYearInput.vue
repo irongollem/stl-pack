@@ -41,7 +41,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "update:modelValue", value: string): void;
+  "update:modelValue": [value: string];
 }>();
 
 // Generate month names
@@ -79,14 +79,14 @@ onMounted(() => {
   if (props.modelValue) {
     const parts = props.modelValue.split("/");
     if (parts.length === 2) {
-      const month = parseInt(parts[0]);
-      const year = parseInt(parts[1]);
+      const month = Number.parseInt(parts[0]);
+      const year = Number.parseInt(parts[1]);
 
-      if (!isNaN(month) && month >= 1 && month <= 12) {
+      if (!Number.isNaN(month) && month >= 1 && month <= 12) {
         selectedMonth.value = month.toString();
       }
 
-      if (!isNaN(year)) {
+      if (!Number.isNaN(year)) {
         selectedYear.value = year.toString();
       }
     }

@@ -5,7 +5,7 @@
         :id="id"
         class="textarea w-full"
         :value="modelValue"
-        @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+        @input="$emit('update:modelValue', ($event.target as HTMLInputElement)?.value)"
         :placeholder="placeholder"
      />
   </label>
@@ -20,6 +20,6 @@ defineProps<{
 }>();
 
 defineEmits<{
-  (e: "update:modelValue", value: string): void;
+  "update:modelValue": [value: string];
 }>();
 </script>

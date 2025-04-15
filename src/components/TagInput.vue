@@ -41,7 +41,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "update:modelValue", value: string[]): void;
+  "update:modelValue": [value: string[]];
 }>();
 
 const inputValue = ref("");
@@ -67,4 +67,3 @@ const handleKeydown = (e: KeyboardEvent) => {
   }
 };
 </script>
-
