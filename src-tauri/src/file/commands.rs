@@ -5,7 +5,7 @@ use crate::file::utils::clean_name;
 use crate::models::{CompressionType, Release, StlModel};
 use crate::settings::SETTINGS_CACHE;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 #[tauri::command]

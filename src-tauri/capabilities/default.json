@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
@@ -10,19 +12,44 @@
     "fs:default",
     {
       "identifier": "fs:allow-stat",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     },
     {
       "identifier": "fs:allow-exists",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     },
     {
       "identifier": "fs:allow-read-file",
-      "allow": [{ "path": "**" }]
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
     },
     {
       "identifier": "dialog:allow-open",
-      "allow": [{ "path": "**" }]
-    }
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "**"
+        }
+      ]
+    },
+    "os:default"
   ]
 }

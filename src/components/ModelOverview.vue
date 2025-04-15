@@ -17,7 +17,7 @@ const releasesStore = useReleasesStore();
     </tr>
     </thead>
     <tbody>
-    <tr v-for="model in releasesStore.release.models" :key="model.model_name">
+    <tr v-for="model in releasesStore.models" :key="model.model_name">
       <td>{{ model.group || "-" }}</td>
       <td class="max-w-[200px] truncate" :title="model.model_name">{{ model.model_name }}</td>
       <td>
@@ -30,9 +30,4 @@ const releasesStore = useReleasesStore();
     </tr>
     </tbody>
   </table>
-
 </template>
-
-<style scoped>
-
-</style>

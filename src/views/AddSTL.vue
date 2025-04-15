@@ -115,11 +115,8 @@ const saveModelData = async () => {
     );
     if (savedModel.status === "ok") {
       toastStore.addToast("Model saved successfully", "success");
-      releasesStore.addModel(savedModel.data);
+      releasesStore.addModel(savedModel.data, "FIXME: im a placeholder");
       clearModel();
-      // Also clear file lists
-      modelFiles.value = [];
-      images.value = [];
     } else {
       toastStore.addToast(
         `Failed to save model: ${savedModel.error}`,
@@ -144,6 +141,7 @@ const clearModel = () => {
     group: "",
   };
   images.value = [];
+  modelFiles.value = [];
 };
 
 const getLogo = (fileName: string) => {

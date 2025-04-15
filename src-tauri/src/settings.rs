@@ -1,8 +1,8 @@
+use crate::models::{CompressionType, Settings};
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Wry};
 use tauri_plugin_store::{Store, StoreExt as _};
-use crate::models::{CompressionType, Settings};
 
 pub(crate) static SETTINGS_CACHE: Lazy<Mutex<Settings>> = Lazy::new(|| {
     Mutex::new(Settings {
