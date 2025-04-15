@@ -41,6 +41,8 @@
           v-model="extraFiles"
         />
 
+        <Switch v-model="openOnSafe" :label="`Open temporary directory in ${fileExplorerName} after creation`" />
+
         <div class="flex justify-between w-full mb-4">
           <button
             class="btn"
@@ -81,9 +83,14 @@ import FileSelect from "../components/FileSelect.vue";
 import { useToastStore } from "../stores/toastStore.ts";
 import { useReleasesStore } from "../stores/releasesStore.ts";
 import type { SelectedFile } from "../composables/useFileSelect";
+import { useOS } from "../composables/useOS";
+import Switch from "../components/Switch.vue";
 
 const toastStore = useToastStore();
 const releasesStore = useReleasesStore();
+const { fileExplorerName } = useOS();
+
+const openOnSafe = ref(false);
 const release = ref<Release>({
   name: "",
   designer: "",
@@ -136,8 +143,9 @@ const saveRelease = async () => {
   if (result.status === "ok") {
     releasesStore.updateRelease(release.value);
     releasesStore.setActiveTab("addStl");
-    // TODO: Check if this works, possibly sends back a relative path
-    await openPath(result.data);
+    if (openOnSafe.value) {
+      await openPath(result.data);
+    }
   } else {
     toastStore.addToast(
       `Failed to create release: ${result.error}`,

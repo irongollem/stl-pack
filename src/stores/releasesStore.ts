@@ -8,6 +8,7 @@ export type Tab = "settings" | "release" | "addStl" | "finalize";
 export const useReleasesStore = defineStore("releases", () => {
   const toastStore = useToastStore();
   const release = ref<Release | undefined>();
+  const models = ref<StlModel[]>([]);
   const releaseDir = ref<string | undefined>();
   const activeTab = ref<Tab>("release");
 
@@ -23,7 +24,7 @@ export const useReleasesStore = defineStore("releases", () => {
     };
   };
 
-  const addModel = (model: StlModel) => {
+  const addModel = (model: StlModel, path: string) => {
     if (!release.value) {
       toastStore.addToast(
         "Release not initialized. Please create a release first.",
@@ -31,25 +32,29 @@ export const useReleasesStore = defineStore("releases", () => {
       );
       return;
     }
-    if (!release.value.models) {
-      release.value.models = [];
-    }
-    release.value.models.push(model);
-  };
-  const removeModel = (model: StlModel) => {
-    if (!release.value || !release.value.models) return;
 
-    const index = release.value.models.findIndex(
+    models.value.push(model);
+    release.value.models.push(path);
+  };
+
+  const removeModel = (model: StlModel) => {
+    if (!release.value || !release.value.models || !models.value) return;
+
+    const index = models.value.findIndex(
       (m) => m.model_name === model.model_name,
     );
     if (index !== -1) {
+      models.value.splice(index, 1);
       release.value.models.splice(index, 1);
     }
   };
+
   const modelCount = computed(() => release.value?.models?.length || 0);
+
   const clearModels = () => {
     if (!release.value) return;
     release.value.models = [];
+    models.value = [];
   };
 
   return {
@@ -59,6 +64,7 @@ export const useReleasesStore = defineStore("releases", () => {
     releaseDir,
     releaseExists,
     updateRelease,
+    models,
     modelCount,
     addModel,
     removeModel,
