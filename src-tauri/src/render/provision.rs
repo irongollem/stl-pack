@@ -497,11 +497,7 @@ async fn run_provision_job(app_handle: AppHandle, job_id: String, cancel: Arc<No
         &cancel,
         |downloaded, total| {
             let total = total.unwrap_or(0);
-            let percent = if total > 0 {
-                (downloaded * 100 / total) as u32
-            } else {
-                0
-            };
+            let percent = (downloaded * 100).checked_div(total).unwrap_or(0) as u32;
             if percent != last_percent {
                 last_percent = percent;
                 let _ = BlenderProvisionStatus::Progress(ProvisionProgressStatus {

@@ -260,7 +260,7 @@
         <div class="border-l-2 border-base-content/10 pl-2 min-w-0">
           <div class="flex items-center gap-1.5 min-w-0">
             <span
-              class="font-mono font-semibold text-[9px] tracking-[0.1em] text-base-content/30 shrink-0"
+              class="font-mono font-semibold text-[9px] tracking-widest text-base-content/30 shrink-0"
             >
               SELECTED BUILD
             </span>
