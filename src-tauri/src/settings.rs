@@ -63,8 +63,8 @@ pub fn default_magnet_inventory() -> Vec<MagnetSpec> {
     .collect()
 }
 
-/// Absent seeds the machine recommendation; present clamps to the floor.
-/// Split from get_settings so it tests without a live Store/AppHandle.
+/// Split out of get_settings so the decision is unit-testable without a
+/// live tauri Store and AppHandle.
 fn resolve_edge_stats_max_tris(stored: Option<u64>) -> u32 {
     match stored {
         Some(v) => (v as u32).max(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS),
@@ -187,15 +187,8 @@ pub async fn get_settings(app_handle: AppHandle) -> Result<Settings, String> {
         .get("scatter_library_dir")
         .and_then(|v| v.as_str().map(String::from));
 
-    // Seeded from THIS machine's RAM on first load (not just defaulted in
-    // memory like known_designers below) so the recommendation survives
-    // past the session even if the user never opens settings — re-deriving
-    // it on every absent-key load would drift if the store ever moved to
-    // different hardware. A stored value under the compile-time floor is
-    // clamped up on read: EDGE_STATS_MAX_TRIS is a promise about worst-case
-    // memory, not a suggestion a hand-edited settings.json can undercut.
-    // Either case (seed or clamp) is written back so the store converges to
-    // a valid value and stops needing the fixup on the next load.
+    // A read that writes: seeding and clamping are both persisted, so the
+    // store converges on a valid value instead of being re-fixed every load.
     let stored_edge_cap = store.get("edge_stats_max_tris").and_then(|v| v.as_u64());
     let edge_stats_max_tris = resolve_edge_stats_max_tris(stored_edge_cap);
     if stored_edge_cap != Some(u64::from(edge_stats_max_tris)) {
@@ -461,10 +454,8 @@ mod tests {
         assert_eq!(restored[0].count, 1);
     }
 
-    /// Absent key (first-ever load, or a pre-update store) seeds the
-    /// machine-derived recommendation rather than some other default —
-    /// recommended_edge_cap() is deterministic within one test run (same
-    /// process, same RAM), so this can compare against it directly.
+    /// Comparing against a live recommended_edge_cap() is safe: it is
+    /// deterministic within one test run (same process, same RAM).
     #[test]
     fn resolve_edge_stats_max_tris_seeds_the_recommendation_when_absent() {
         assert_eq!(
@@ -473,9 +464,6 @@ mod tests {
         );
     }
 
-    /// A stored value under EDGE_STATS_MAX_TRIS is clamped up on read — the
-    /// floor is a promise, not a suggestion a hand-edited settings.json (or
-    /// an old build's smaller default) can undercut.
     #[test]
     fn resolve_edge_stats_max_tris_clamps_a_low_stored_value_to_the_floor() {
         assert_eq!(
@@ -484,9 +472,6 @@ mod tests {
         );
     }
 
-    /// A stored value already at or above the floor passes through
-    /// unchanged — clamping must not silently override a deliberately
-    /// large user setting.
     #[test]
     fn resolve_edge_stats_max_tris_passes_through_a_value_at_or_above_the_floor() {
         let above_floor = u64::from(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS) + 1_000_000;
