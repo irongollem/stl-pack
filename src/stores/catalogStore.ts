@@ -12,6 +12,7 @@ import {
   type DesignerCount,
   type DuplicateGroup,
   type GroupOrigin,
+  type ModelFileGeometry,
   type NormalizePlan,
   type RenderCandidate,
   type TagCount,
@@ -133,6 +134,12 @@ export const useCatalogStore = defineStore("catalog", () => {
     dupCompletedCount,
     startDuplicateScan,
     cancelDuplicateScan,
+    isMiningGeometry,
+    geoProgress,
+    geoSummary,
+    geoCompletedCount,
+    startGeometryScan,
+    cancelGeometryScan,
   } = useCatalogJobs();
   const {
     isPacking,
@@ -223,6 +230,9 @@ export const useCatalogStore = defineStore("catalog", () => {
   const activeVariant = ref("");
   const selected = ref<CatalogEntry | null>(null);
   const files = ref<CatalogFile[]>([]);
+  // Mined per-file geometry (issue #15) for the selected member's dir_path —
+  // empty until a geometry scan has mined that folder's files.
+  const modelGeometry = ref<ModelFileGeometry[]>([]);
   const newTag = ref("");
   const dupGroups = ref<DuplicateGroup[]>([]);
   const showDups = ref(false);
@@ -304,6 +314,18 @@ export const useCatalogStore = defineStore("catalog", () => {
 
   const stlPaths = computed(() =>
     files.value.filter((f) => f.extension === "stl").map((f) => f.path),
+  );
+
+  // Aggregate line for the drawer's geometry section — tallest file, total
+  // resin volume, total triangle budget across every mined file.
+  const geometryTallestMm = computed(() =>
+    modelGeometry.value.reduce((max, f) => Math.max(max, f.z_mm), 0),
+  );
+  const geometryTotalVolumeMl = computed(
+    () => modelGeometry.value.reduce((sum, f) => sum + f.volume_mm3, 0) / 1000,
+  );
+  const geometryTotalTriCount = computed(() =>
+    modelGeometry.value.reduce((sum, f) => sum + f.tri_count, 0),
   );
 
   const wastedBytes = computed(() =>
@@ -547,11 +569,15 @@ export const useCatalogStore = defineStore("catalog", () => {
     const entryKey = memberKey(entry);
     selected.value = entry;
     files.value = [];
+    modelGeometry.value = [];
     // A synthesized pose member carries a variant_key; pass it so we list
     // only that pose's files. Whole-folder members send null (all files).
-    const [fileResult, variantResult] = await Promise.all([
+    // Geometry is mined per dir_path (no variant_key split), so it's fetched
+    // alongside the file list even though it's the same call across poses.
+    const [fileResult, variantResult, geometryResult] = await Promise.all([
       commands.getCatalogModelFiles(entry.dir_path, entry.variant_key),
       commands.getFileVariants(entry.dir_path),
+      commands.getModelGeometry(entry.dir_path),
     ]);
     if (
       epoch !== entrySelectionEpoch ||
@@ -569,6 +595,8 @@ export const useCatalogStore = defineStore("catalog", () => {
       }
       fileVariantMap.value = map;
     }
+    if (geometryResult.status === "ok")
+      modelGeometry.value = geometryResult.data;
   };
 
   /* ---- assign files in a dump folder to variant/pose buckets ---- */
@@ -2452,6 +2480,28 @@ export const useCatalogStore = defineStore("catalog", () => {
     }
   });
 
+  watch(geoCompletedCount, async () => {
+    const summary = geoSummary.value;
+    if (summary) {
+      const { mined, already_known, failed, skipped_too_large } = summary;
+      toastStore.addToast(
+        `Mined geometry for ${mined} file${mined === 1 ? "" : "s"}` +
+          (already_known ? ` · ${already_known} already known` : "") +
+          (failed ? ` · ${failed} failed` : "") +
+          (skipped_too_large
+            ? ` · ${skipped_too_large} skipped (too large)`
+            : ""),
+        failed ? "warning" : "success",
+      );
+    }
+    // The open drawer shows pre-scan (empty) geometry otherwise — refresh it
+    // in place so the section appears without reopening the model.
+    if (selected.value) {
+      const result = await commands.getModelGeometry(selected.value.dir_path);
+      if (result.status === "ok") modelGeometry.value = result.data;
+    }
+  });
+
   // Mirrors the backend session into this store; called before the refreshes
   // below so a change made in Settings is already in effect by the time
   // they run, not one visit later.
@@ -2503,6 +2553,10 @@ export const useCatalogStore = defineStore("catalog", () => {
     dupProgress,
     startDuplicateScan,
     cancelDuplicateScan,
+    isMiningGeometry,
+    geoProgress,
+    startGeometryScan,
+    cancelGeometryScan,
     isPacking,
     packProgress,
     packJobLabel,
@@ -2578,6 +2632,10 @@ export const useCatalogStore = defineStore("catalog", () => {
     displayPath,
     measuredLabel,
     stlPaths,
+    modelGeometry,
+    geometryTallestMm,
+    geometryTotalVolumeMl,
+    geometryTotalTriCount,
     drawerWidth,
     startDrawerResize,
     // 3D viewer
