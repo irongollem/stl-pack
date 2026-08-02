@@ -131,6 +131,50 @@ pub struct DuplicateCancelledStatus {
     pub job_id: String,
 }
 
+/// Backend mining stage progress (issue #15) — shaped exactly like
+/// DuplicateStatus, since mine_geometry walks the index the same way
+/// find_duplicates does (see catalog::geometry's module doc).
+#[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
+pub enum GeometryStatus {
+    Started(GeometryStartedStatus),
+    Progress(GeometryProgressStatus),
+    Completed(GeometryCompletedStatus),
+    Failed(GeometryFailedStatus),
+    Cancelled(GeometryCancelledStatus),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryStartedStatus {
+    pub job_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryProgressStatus {
+    pub job_id: String,
+    pub processed: u32,
+    pub total: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryCompletedStatus {
+    pub job_id: String,
+    pub mined: u32,
+    pub already_known: u32,
+    pub failed: u32,
+    pub skipped_too_large: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryFailedStatus {
+    pub job_id: String,
+    pub error: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryCancelledStatus {
+    pub job_id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub enum PackStatus {
     Started(PackStartedStatus),

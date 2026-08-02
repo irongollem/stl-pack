@@ -26,14 +26,15 @@ use catalog::commands::{
     get_catalog_group_members, get_catalog_group_sources, get_catalog_model_files,
     get_catalog_releases, get_catalog_stats,
     get_catalog_tags, get_duplicate_groups, get_file_variants, get_group_rename_origins,
-    get_pack_candidates, get_render_candidates, list_catalog_roots, list_ignored_folders,
-    list_nsfw_designers, merge_duplicate_files, pack_models, plan_normalize, remove_catalog_root,
-    remove_catalog_tag, remove_group_tag,
+    get_model_geometry, get_pack_candidates, get_render_candidates, list_catalog_roots,
+    list_ignored_folders, list_nsfw_designers, merge_duplicate_files, pack_models, plan_normalize,
+    remove_catalog_root, remove_catalog_tag, remove_group_tag,
     rename_catalog_designer, rename_catalog_group, rename_catalog_release, search_catalog,
     search_catalog_groups, set_designer_nsfw,
     set_group_cover, set_group_nsfw, set_model_preview, set_model_rotation,
-    set_primary_catalog_root, start_catalog_scan, start_duplicate_scan, summarize_model_dirs,
-    supports_file_links, unignore_folder, unpack_models, update_model_metadata,
+    set_primary_catalog_root, start_catalog_scan, start_duplicate_scan, start_geometry_scan,
+    summarize_model_dirs, supports_file_links, unignore_folder, unpack_models,
+    update_model_metadata,
 };
 use content_filter::{
     change_nsfw_pin, configure_nsfw_pin, get_nsfw_access_state, lock_nsfw,
@@ -50,7 +51,7 @@ use minihoard::{
 };
 use models::events::{
     BaseCutStatus, BatchRenderStatus, BlenderProvisionStatus, CompressionStatus, DuplicateStatus,
-    LandscapeGenStatus, PackStatus, RenderStatus, ScanStatus, ScatterStatus,
+    GeometryStatus, LandscapeGenStatus, PackStatus, RenderStatus, ScanStatus, ScatterStatus,
 };
 use render::batch::start_batch_render;
 use render::commands::{
@@ -120,6 +121,7 @@ fn create_specta_builder() -> Builder {
             remove_catalog_root,
             set_primary_catalog_root,
             start_duplicate_scan,
+            start_geometry_scan,
             cancel_catalog_job,
             search_catalog,
             get_catalog_tags,
@@ -128,6 +130,7 @@ fn create_specta_builder() -> Builder {
             add_group_tag,
             remove_group_tag,
             get_catalog_model_files,
+            get_model_geometry,
             get_catalog_stats,
             get_duplicate_groups,
             get_catalog_releases,
@@ -198,6 +201,7 @@ fn create_specta_builder() -> Builder {
             RenderStatus,
             ScanStatus,
             DuplicateStatus,
+            GeometryStatus,
             PackStatus,
             BlenderProvisionStatus,
             BatchRenderStatus,

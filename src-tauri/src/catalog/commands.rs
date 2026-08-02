@@ -1,10 +1,11 @@
 use crate::error::AppError;
 use crate::models::events::{
     DuplicateCancelledStatus, DuplicateCompletedStatus, DuplicateFailedStatus,
-    DuplicateProgressStatus, DuplicateStartedStatus, DuplicateStatus, PackCancelledStatus,
-    PackCompletedStatus, PackFailedStatus, PackProgressStatus, PackStartedStatus, PackStatus,
-    ScanCancelledStatus, ScanCompletedStatus, ScanFailedStatus, ScanProgressStatus,
-    ScanStartedStatus, ScanStatus,
+    DuplicateProgressStatus, DuplicateStartedStatus, DuplicateStatus, GeometryCancelledStatus,
+    GeometryCompletedStatus, GeometryFailedStatus, GeometryProgressStatus, GeometryStartedStatus,
+    GeometryStatus, PackCancelledStatus, PackCompletedStatus, PackFailedStatus,
+    PackProgressStatus, PackStartedStatus, PackStatus, ScanCancelledStatus, ScanCompletedStatus,
+    ScanFailedStatus, ScanProgressStatus, ScanStartedStatus, ScanStatus,
 };
 use once_cell::sync::Lazy;
 use rusqlite::Connection;
@@ -18,10 +19,10 @@ use tauri_specta::Event;
 use uuid::Uuid;
 
 use super::{
-    db, dups, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
+    db, dups, geometry, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
     CatalogGroupResult, CatalogSearchResult, CatalogStats, DesignerCount, DuplicateGroup,
-    EnsureOutcome, FileVariant, GroupOrigin, ModelMetaUpdate, MoveOperation, NormalizeOp,
-    NormalizePlan, ReleaseSummary, TagCount,
+    EnsureOutcome, FileVariant, GroupOrigin, ModelFileGeometry, ModelMetaUpdate, MoveOperation,
+    NormalizeOp, NormalizePlan, ReleaseSummary, TagCount,
 };
 
 /// Scan and duplicate jobs share one registry; both cancel through
@@ -461,6 +462,84 @@ pub async fn start_duplicate_scan(app_handle: AppHandle) -> Result<String, AppEr
             }
             Err(e) => {
                 DuplicateStatus::Failed(DuplicateFailedStatus {
+                    job_id: job_id_clone,
+                    error: e.to_string(),
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+/// Backend mining stage of issue #15: parse every loose STL the catalog
+/// knows about for bbox/volume/open-edge facts, one row per distinct
+/// content hash. Mirrors start_duplicate_scan's shape exactly — same job
+/// registry, same "pack:" exclusion (a pack job deletes the loose bytes
+/// mining is busy reading), same throttled progress stream.
+#[tauri::command]
+#[specta::specta]
+pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppError> {
+    if job_active("pack:") {
+        // mining reads file bytes a pack job is busy deleting
+        return Err(AppError::InvalidInput(
+            "A pack job is running — mine geometry when it finishes".to_string(),
+        ));
+    }
+    let job_id = format!("geom:{}", Uuid::new_v4());
+    let cancel = register_job(&job_id)?;
+    let job_id_clone = job_id.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        GeometryStatus::Started(GeometryStartedStatus {
+            job_id: job_id_clone.clone(),
+        })
+        .emit(&app_handle)
+        .ok();
+
+        let result = (|| -> Result<geometry::GeometryOutcome, AppError> {
+            let conn = open_db(&app_handle)?;
+            let mut last_emit = Instant::now();
+            let progress_app = app_handle.clone();
+            let progress_job = job_id_clone.clone();
+            geometry::mine_geometry(&conn, &cancel, |processed, total| {
+                if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
+                    last_emit = Instant::now();
+                    GeometryStatus::Progress(GeometryProgressStatus {
+                        job_id: progress_job.clone(),
+                        processed,
+                        total,
+                    })
+                    .emit(&progress_app)
+                    .ok();
+                }
+            })
+        })();
+
+        unregister_job(&job_id_clone);
+        match result {
+            Ok(outcome) => {
+                GeometryStatus::Completed(GeometryCompletedStatus {
+                    job_id: job_id_clone,
+                    mined: outcome.mined,
+                    already_known: outcome.already_known,
+                    failed: outcome.failed,
+                    skipped_too_large: outcome.skipped_too_large,
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+            Err(AppError::UserCancelled(_)) => {
+                GeometryStatus::Cancelled(GeometryCancelledStatus {
+                    job_id: job_id_clone,
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+            Err(e) => {
+                GeometryStatus::Failed(GeometryFailedStatus {
                     job_id: job_id_clone,
                     error: e.to_string(),
                 })
@@ -1187,6 +1266,23 @@ pub async fn get_catalog_model_files(
     })
     .await
     .map_err(|e| AppError::ConfigError(format!("File task failed: {}", e)))?
+}
+
+/// A model dir's mined per-file geometry (issue #15) — only files whose
+/// content hash has been mined show up; run start_geometry_scan first to
+/// populate file_geometry.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_model_geometry(
+    app_handle: AppHandle,
+    dir_path: String,
+) -> Result<Vec<ModelFileGeometry>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app_handle)?;
+        db::model_geometry(&conn, &dir_path)
+    })
+    .await
+    .map_err(|e| AppError::ConfigError(format!("Geometry listing task failed: {}", e)))?
 }
 
 #[tauri::command]

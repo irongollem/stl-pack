@@ -2,10 +2,11 @@ use crate::error::AppError;
 use rusqlite::{params, Connection};
 use std::path::Path;
 
+use super::stl_facts::StlFacts;
 use super::{
     CatalogEntry, CatalogFile, CatalogGroup, CatalogStats, DesignerCount, DuplicateGroup,
-    ExtensionStat, FileRow, FileVariant, FileVariantRow, GroupOrigin, ModelRow, PackRow,
-    ReleaseSummary,
+    ExtensionStat, FileRow, FileVariant, FileVariantRow, GroupOrigin, ModelFileGeometry, ModelRow,
+    PackRow, ReleaseSummary,
 };
 
 const SCHEMA_VERSION: i64 = 7;
@@ -206,6 +207,22 @@ fn init_schema(conn: &Connection) -> Result<(), AppError> {
         -- comparison in this file.
         CREATE TABLE IF NOT EXISTS nsfw_designers (
             designer TEXT PRIMARY KEY COLLATE NOCASE
+        );
+
+        -- Mined-once-per-content geometry facts (issue #15 backend mining
+        -- stage), keyed by the BARE blake3 hex of the file's bytes — the dup
+        -- scanner's format (see pack::bare_hash and files.content_hash
+        -- above), so a file that's been mined once is never re-parsed even
+        -- if it later shows up again under a different path or name.
+        CREATE TABLE IF NOT EXISTS file_geometry (
+            content_hash TEXT PRIMARY KEY,
+            tri_count    INTEGER NOT NULL,
+            x_mm REAL NOT NULL, y_mm REAL NOT NULL, z_mm REAL NOT NULL,
+            volume_mm3   REAL NOT NULL,
+            -- NULL = edge stats skipped above stl_facts::EDGE_STATS_MAX_TRIS
+            -- (mirrors StlFacts.open_edge_count exactly), not "unknown".
+            open_edges   INTEGER,
+            derived_at   INTEGER NOT NULL
         );
         "#,
     )
@@ -2203,6 +2220,115 @@ pub fn store_hash(conn: &Connection, path: &str, hash: &str) -> Result<(), AppEr
     )
     .map_err(|e| AppError::ConfigError(format!("Failed to store hash: {}", e)))?;
     Ok(())
+}
+
+/// Loose (unpacked) STL files a geometry mining pass should consider —
+/// archive_path IS NOT NULL rows are excluded because their bytes live
+/// inside a model.plinthpack, not loose on disk, so mining has nothing to
+/// fs::read (see catalog::geometry's module doc). Each candidate's
+/// content_hash rides along so the mining loop can skip a hash it already
+/// has (set by an earlier scan/dup-run/pack) straight to the geometry-known
+/// check without opening the file.
+pub fn stl_geometry_candidates(
+    conn: &Connection,
+) -> Result<Vec<(String, Option<String>)>, AppError> {
+    let map_err =
+        |e: rusqlite::Error| AppError::ConfigError(format!("Geometry candidate query failed: {}", e));
+    let mut stmt = conn
+        .prepare("SELECT path, content_hash FROM files WHERE extension = 'stl' AND archive_path IS NULL")
+        .map_err(map_err)?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(map_err)?;
+    Ok(rows)
+}
+
+/// Whether `content_hash` (bare blake3 hex) already has mined geometry —
+/// checked before any disk read so a duplicate's second (or hundredth)
+/// occurrence never re-parses its bytes.
+pub fn geometry_exists(conn: &Connection, content_hash: &str) -> Result<bool, AppError> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM file_geometry WHERE content_hash = ?1",
+            [content_hash],
+            |row| row.get(0),
+        )
+        .map_err(|e| AppError::ConfigError(format!("Geometry lookup failed: {}", e)))?;
+    Ok(count > 0)
+}
+
+/// Upsert one content hash's mined facts. x_mm/y_mm/z_mm are the STL's
+/// bounding-box dimensions (max − min per axis), not the raw min/max —
+/// the natural "measured size" number, matching the models.dims_mm
+/// convention elsewhere in this file.
+pub fn store_file_geometry(
+    conn: &Connection,
+    content_hash: &str,
+    facts: &StlFacts,
+    derived_at: i64,
+) -> Result<(), AppError> {
+    let x_mm = (facts.max.0 - facts.min.0) as f64;
+    let y_mm = (facts.max.1 - facts.min.1) as f64;
+    let z_mm = (facts.max.2 - facts.min.2) as f64;
+    conn.execute(
+        "INSERT INTO file_geometry
+             (content_hash, tri_count, x_mm, y_mm, z_mm, volume_mm3, open_edges, derived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(content_hash) DO UPDATE SET
+             tri_count = excluded.tri_count,
+             x_mm = excluded.x_mm, y_mm = excluded.y_mm, z_mm = excluded.z_mm,
+             volume_mm3 = excluded.volume_mm3,
+             open_edges = excluded.open_edges,
+             derived_at = excluded.derived_at",
+        params![
+            content_hash,
+            facts.tri_count,
+            x_mm,
+            y_mm,
+            z_mm,
+            facts.volume_mm3,
+            facts.open_edge_count,
+            derived_at
+        ],
+    )
+    .map_err(|e| AppError::ConfigError(format!("Failed to store geometry: {}", e)))?;
+    Ok(())
+}
+
+/// A model dir's mined per-file geometry, joined from file_geometry via
+/// each file's content_hash — files with no hash yet, or a hash mining
+/// hasn't reached, simply don't appear (an inner join, not a left join:
+/// there is nothing useful to show for a file with no facts). Mirrors
+/// model_files' dir-matching semantics exactly (`f.dir_path = ?1`, the
+/// whole-folder case — no variant/pose narrowing, since geometry is a fact
+/// about the file, not about which pose bucket it's filed under).
+pub fn model_geometry(conn: &Connection, dir_path: &str) -> Result<Vec<ModelFileGeometry>, AppError> {
+    let map_err =
+        |e: rusqlite::Error| AppError::ConfigError(format!("Geometry listing failed: {}", e));
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.file_name, g.tri_count, g.x_mm, g.y_mm, g.z_mm, g.volume_mm3, g.open_edges
+             FROM files f JOIN file_geometry g ON g.content_hash = f.content_hash
+             WHERE f.dir_path = ?1
+             ORDER BY f.file_name COLLATE NOCASE",
+        )
+        .map_err(map_err)?;
+    let rows = stmt
+        .query_map(params![dir_path], |row| {
+            Ok(ModelFileGeometry {
+                file_name: row.get(0)?,
+                tri_count: row.get(1)?,
+                x_mm: row.get(2)?,
+                y_mm: row.get(3)?,
+                z_mm: row.get(4)?,
+                volume_mm3: row.get(5)?,
+                open_edges: row.get(6)?,
+            })
+        })
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(map_err)?;
+    Ok(rows)
 }
 
 /// Batch-write physical-file identities in one transaction — a duplicate

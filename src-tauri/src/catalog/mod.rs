@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod dups;
+pub mod geometry;
 pub mod layout;
 pub mod normalize;
 pub mod pack;
@@ -356,6 +357,23 @@ pub struct DuplicateGroup {
     /// deleted until the model is unpacked; the UI greys them with a hint.
     #[serde(default)]
     pub packed_paths: Vec<String>,
+}
+
+/// One file's mined geometry facts (issue #15 backend mining stage),
+/// joined from file_geometry via the file's content_hash — a duplicate file
+/// (any path, same bytes) shows the same facts without ever being re-parsed.
+/// x_mm/y_mm/z_mm are the STL's bounding-box dimensions (max − min per
+/// axis); open_edges is None when the mesh exceeded
+/// stl_facts::EDGE_STATS_MAX_TRIS and edge stats were skipped, not "clean".
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct ModelFileGeometry {
+    pub file_name: String,
+    pub tri_count: u32,
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub z_mm: f64,
+    pub volume_mm3: f64,
+    pub open_edges: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]

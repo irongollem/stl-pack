@@ -375,6 +375,21 @@ async startDuplicateScan() : Promise<Result<string, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Backend mining stage of issue #15: parse every loose STL the catalog
+ * knows about for bbox/volume/open-edge facts, one row per distinct
+ * content hash. Mirrors start_duplicate_scan's shape exactly — same job
+ * registry, same "pack:" exclusion (a pack job deletes the loose bytes
+ * mining is busy reading), same throttled progress stream.
+ */
+async startGeometryScan() : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_geometry_scan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async cancelCatalogJob(jobId: string) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_catalog_job", { jobId }) };
@@ -438,6 +453,19 @@ async removeGroupTag(groupName: string, tag: string) : Promise<Result<null, AppE
 async getCatalogModelFiles(dirPath: string, variantKey: string | null) : Promise<Result<CatalogFile[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_catalog_model_files", { dirPath, variantKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * A model dir's mined per-file geometry (issue #15) — only files whose
+ * content hash has been mined show up; run start_geometry_scan first to
+ * populate file_geometry.
+ */
+async getModelGeometry(dirPath: string) : Promise<Result<ModelFileGeometry[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_model_geometry", { dirPath }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1154,6 +1182,7 @@ batchRenderStatus: BatchRenderStatus,
 blenderProvisionStatus: BlenderProvisionStatus,
 compressionStatus: CompressionStatus,
 duplicateStatus: DuplicateStatus,
+geometryStatus: GeometryStatus,
 landscapeGenStatus: LandscapeGenStatus,
 minihoardDownloadStatus: MinihoardDownloadStatus,
 minihoardStatus: MinihoardStatus,
@@ -1167,6 +1196,7 @@ batchRenderStatus: "batch-render-status",
 blenderProvisionStatus: "blender-provision-status",
 compressionStatus: "compression-status",
 duplicateStatus: "duplicate-status",
+geometryStatus: "geometry-status",
 landscapeGenStatus: "landscape-gen-status",
 minihoardDownloadStatus: "minihoard-download-status",
 minihoardStatus: "minihoard-status",
@@ -1638,6 +1668,17 @@ export type GeneratedPieceKind = "pebble" | "rock" | "twig" | "grass" | "mushroo
  * style is a new row here, not a new pipeline).
  */
 export type GeneratorPreset = { id: string; label: string; params: LandscapeParams }
+export type GeometryCancelledStatus = { job_id: string }
+export type GeometryCompletedStatus = { job_id: string; mined: number; already_known: number; failed: number; skipped_too_large: number }
+export type GeometryFailedStatus = { job_id: string; error: string }
+export type GeometryProgressStatus = { job_id: string; processed: number; total: number }
+export type GeometryStartedStatus = { job_id: string }
+/**
+ * Backend mining stage progress (issue #15) — shaped exactly like
+ * DuplicateStatus, since mine_geometry walks the index the same way
+ * find_duplicates does (see catalog::geometry's module doc).
+ */
+export type GeometryStatus = { Started: GeometryStartedStatus } | { Progress: GeometryProgressStatus } | { Completed: GeometryCompletedStatus } | { Failed: GeometryFailedStatus } | { Cancelled: GeometryCancelledStatus }
 /**
  * Emissive glow spec for `MaterialPalette.glow` — lava-only today (the
  * crust needs a stones layer to key `glow_w` off of, see
@@ -1874,6 +1915,15 @@ thumbnail_url: string | null;
  */
 image_url: string | null }
 export type MinihoardStatus = { Line: MinihoardLine } | { Finished: MinihoardFinished }
+/**
+ * One file's mined geometry facts (issue #15 backend mining stage),
+ * joined from file_geometry via the file's content_hash — a duplicate file
+ * (any path, same bytes) shows the same facts without ever being re-parsed.
+ * x_mm/y_mm/z_mm are the STL's bounding-box dimensions (max − min per
+ * axis); open_edges is None when the mesh exceeded
+ * stl_facts::EDGE_STATS_MAX_TRIS and edge stats were skipped, not "clean".
+ */
+export type ModelFileGeometry = { file_name: string; tri_count: number; x_mm: number; y_mm: number; z_mm: number; volume_mm3: number; open_edges: number | null }
 export type ModelLocation = { Local: string } | { External: string }
 /**
  * The user-editable metadata for one model, saved together from the drawer.
