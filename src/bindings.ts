@@ -1215,7 +1215,7 @@ magnet_ignored: boolean | null;
  * Slice-mode scatter shells omitted because they could not be clipped
  * into a closed, rim-bounded solid.
  */
-scatter_skipped: number | null;
+scatter_skipped: number | null; 
 /**
  * VTT GLB export design doc "Base cut": the cut's `.glb` twin path,
  * glb-mode jobs only (`BaseCutJob.glb == true`) — `None` in the
