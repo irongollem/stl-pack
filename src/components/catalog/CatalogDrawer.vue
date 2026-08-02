@@ -806,6 +806,13 @@
             >
               ⚠
             </span>
+            <span
+              v-else-if="g.open_edges === null"
+              class="shrink-0 opacity-40"
+              title="watertightness not checked — this mesh was over the triangle limit when mined; raise the limit in Settings and mine again to backfill"
+            >
+              ○
+            </span>
             <span class="opacity-70 shrink-0">
               {{ g.x_mm.toFixed(1) }}×{{ g.y_mm.toFixed(1) }}×{{
                 g.z_mm.toFixed(1)

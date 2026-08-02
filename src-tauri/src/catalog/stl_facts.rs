@@ -30,15 +30,24 @@ pub struct StlFacts {
     /// accumulated in f64). ~0 for degenerate open sheets.
     pub volume_mm3: f64,
     /// Number of edges NOT shared by exactly two triangles (0 for a clean
-    /// closed manifold). None when tri_count > EDGE_STATS_MAX_TRIS — the
-    /// edge map is skipped to bound memory on huge scenery meshes.
+    /// closed manifold). None when tri_count exceeds the caller's edge-map
+    /// cap (see FactsAccumulator::with_cap) — the edge map is skipped to
+    /// bound memory on huge scenery meshes.
     pub open_edge_count: Option<u32>,
 }
 
-/// Above this many triangles, the edge-adjacency map is skipped (returning
-/// `open_edge_count: None`) rather than grown unbounded — a hostile or just
-/// enormous scenery STL shouldn't be able to force a multi-GB HashMap during
-/// a routine catalog scan. bbox and volume, which need no map, still run.
+/// Conservative fallback triangle cap for the edge-adjacency map: passed to
+/// `FactsAccumulator::with_cap` by callers with no runtime cap available
+/// (tests, the test-only whole-slice wrapper below), and the floor every
+/// runtime cap is clamped to (see
+/// catalog::geometry::recommended_edge_cap and settings::edge_stats_max_tris)
+/// — no user setting, however small, is allowed to regress mining below
+/// what today's build already handles by default. Above this many
+/// triangles with no larger cap in effect, the edge map is skipped
+/// (returning `open_edge_count: None`) rather than grown unbounded — a
+/// hostile or just enormous scenery STL shouldn't be able to force a
+/// multi-GB HashMap during a routine catalog scan. bbox and volume, which
+/// need no map, still run regardless of the cap.
 pub const EDGE_STATS_MAX_TRIS: u32 = 1_500_000;
 
 pub(crate) const HEADER_LEN: usize = 80;
@@ -86,14 +95,13 @@ impl FactsAccumulator {
     /// `tri_count` is the header's declared triangle count — the caller is
     /// responsible for validating the file's byte length against it (the
     /// wrapper below does; the streaming miner checks the stat size) and
-    /// for pushing exactly that many records.
-    pub fn new(tri_count: u32) -> Result<Self, String> {
-        Self::with_cap(tri_count, EDGE_STATS_MAX_TRIS)
-    }
-
-    /// Cap passed explicitly purely so tests can exercise the boundary with
-    /// a tiny value instead of building a multi-million-triangle STL.
-    fn with_cap(tri_count: u32, edge_cap: u32) -> Result<Self, String> {
+    /// for pushing exactly that many records. `edge_cap` is the
+    /// edge-adjacency map's triangle ceiling: the miner passes the
+    /// settings-derived value (settings::edge_stats_max_tris, via
+    /// catalog::geometry::recommended_edge_cap), and EDGE_STATS_MAX_TRIS is
+    /// the fallback for callers with no such setting (tests, the test-only
+    /// whole-slice wrapper below).
+    pub(crate) fn with_cap(tri_count: u32, edge_cap: u32) -> Result<Self, String> {
         if tri_count == 0 {
             return Err("binary STL header reports zero triangles".to_string());
         }

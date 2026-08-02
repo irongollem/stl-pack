@@ -62,3 +62,9 @@ uuid = { version = "1.4", features = ["v4", "serde"] }
 walkdir = "2.5.0"
 zip = "2.6.1"
 file-id = "0.2.3"
+# RAM detection only, to size the geometry-mining edge-map cap to the
+# machine (see catalog::geometry::recommended_edge_cap) — no process/user
+# enumeration, so default-features off and just "system".
+sysinfo = { version = "0.38.4", default-features = false, features = [
+  "system",
+] }

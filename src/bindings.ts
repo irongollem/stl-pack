@@ -390,6 +390,22 @@ async startGeometryScan() : Promise<Result<string, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * The edge-stats triangle cap this machine's RAM would suggest, for the
+ * settings UI's "Auto" control to show/restore without first saving a
+ * value — settings::get_settings seeds edge_stats_max_tris to the same
+ * number on first load, but a user who already has a stored value needs a
+ * way to see (and revert to) what "Auto" would pick without overwriting
+ * their setting first.
+ */
+async getRecommendedEdgeCap() : Promise<Result<number, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_recommended_edge_cap") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async cancelCatalogJob(jobId: string) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_catalog_job", { jobId }) };
@@ -2406,7 +2422,16 @@ magnet_inventory?: MagnetSpec[] | null;
  * piece picker only offers generated + bundled sources.
  * serde(default): an older store has no such key.
  */
-scatter_library_dir?: string | null }
+scatter_library_dir?: string | null; 
+/**
+ * Triangle-count ceiling above which geometry mining skips the
+ * open-edge HashMap (see catalog::stl_facts::EDGE_STATS_MAX_TRIS and
+ * catalog::geometry::recommended_edge_cap). Seeded from the machine's
+ * RAM on first load; never below EDGE_STATS_MAX_TRIS — a stored value
+ * under that floor is clamped up on read. serde(default): an older
+ * store has no such key.
+ */
+edge_stats_max_tris?: number | null }
 export type StartedStatus = { job_id: string; total_files: number; total_size_kb: number }
 /**
  * A model as the release builder stages it and `model.json` records it.

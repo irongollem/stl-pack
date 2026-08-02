@@ -488,6 +488,16 @@ pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppErr
             "A pack job is running — mine geometry when it finishes".to_string(),
         ));
     }
+    // Edge-stats cap from settings (async store read) before the blocking
+    // job — mirrors the pack_level read above start_pack. Falls back to the
+    // machine-derived recommendation if settings can't be read at all, same
+    // as a first-load seed would, rather than failing the whole scan.
+    let edge_cap = crate::settings::get_settings(app_handle.clone())
+        .await
+        .ok()
+        .and_then(|s| s.edge_stats_max_tris)
+        .unwrap_or_else(geometry::recommended_edge_cap);
+
     let job_id = format!("geom:{}", Uuid::new_v4());
     let cancel = register_job(&job_id)?;
     let job_id_clone = job_id.clone();
@@ -504,7 +514,7 @@ pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppErr
             let mut last_emit = Instant::now();
             let progress_app = app_handle.clone();
             let progress_job = job_id_clone.clone();
-            geometry::mine_geometry(&conn, &cancel, |processed, total| {
+            geometry::mine_geometry(&conn, &cancel, edge_cap, |processed, total| {
                 if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
                     last_emit = Instant::now();
                     GeometryStatus::Progress(GeometryProgressStatus {
@@ -549,6 +559,18 @@ pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppErr
     });
 
     Ok(job_id)
+}
+
+/// The edge-stats triangle cap this machine's RAM would suggest, for the
+/// settings UI's "Auto" control to show/restore without first saving a
+/// value — settings::get_settings seeds edge_stats_max_tris to the same
+/// number on first load, but a user who already has a stored value needs a
+/// way to see (and revert to) what "Auto" would pick without overwriting
+/// their setting first.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_recommended_edge_cap() -> Result<u32, AppError> {
+    Ok(geometry::recommended_edge_cap())
 }
 
 #[tauri::command]

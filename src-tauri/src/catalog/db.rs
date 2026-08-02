@@ -2244,14 +2244,27 @@ pub fn stl_geometry_candidates(
     Ok(rows)
 }
 
-/// Whether `content_hash` (bare blake3 hex) already has mined geometry —
-/// checked before any disk read so a duplicate's second (or hundredth)
-/// occurrence never re-parses its bytes.
-pub fn geometry_exists(conn: &Connection, content_hash: &str) -> Result<bool, AppError> {
+/// Whether `content_hash` (bare blake3 hex) already has a file_geometry row
+/// that `edge_cap` can't improve on — checked before any disk read so a
+/// duplicate's second (or hundredth) occurrence never re-parses its bytes,
+/// AND so raising the edge-stats cap and re-running actually backfills the
+/// rows it unblocks instead of skipping them forever.
+///
+/// True iff a row exists AND (its open_edges is already populated — mining
+/// under any cap can't improve on a complete row — OR its tri_count still
+/// exceeds `edge_cap`, meaning re-mining under this cap would just produce
+/// the same NULL again). False (re-mine) only for a stored row with
+/// `open_edges IS NULL` whose `tri_count` now fits under a raised cap.
+pub fn geometry_satisfies(
+    conn: &Connection,
+    content_hash: &str,
+    edge_cap: u32,
+) -> Result<bool, AppError> {
     let count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM file_geometry WHERE content_hash = ?1",
-            [content_hash],
+            "SELECT COUNT(*) FROM file_geometry
+             WHERE content_hash = ?1 AND (open_edges IS NOT NULL OR tri_count > ?2)",
+            params![content_hash, edge_cap],
             |row| row.get(0),
         )
         .map_err(|e| AppError::ConfigError(format!("Geometry lookup failed: {}", e)))?;

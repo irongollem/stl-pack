@@ -24,11 +24,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 
 use crate::error::AppError;
 
 use super::db;
-use super::stl_facts::{parse_header, FactsAccumulator, StlFacts, COUNT_LEN, HEADER_LEN, RECORD_LEN};
+use super::stl_facts::{
+    parse_header, FactsAccumulator, StlFacts, COUNT_LEN, EDGE_STATS_MAX_TRIS, HEADER_LEN, RECORD_LEN,
+};
 
 /// Bytes streamed per read while mining: a whole number of 50-byte records
 /// (~800 KiB) so record parsing never straddles a chunk boundary. This is
@@ -39,6 +42,71 @@ use super::stl_facts::{parse_header, FactsAccumulator, StlFacts, COUNT_LEN, HEAD
 /// "file missing" in the drawer. The only bounded-by-triangle-count cost is
 /// stl_facts' edge map, which caps itself.)
 const STREAM_CHUNK_BYTES: usize = RECORD_LEN * 16 * 1024;
+
+/// Fraction of total system RAM set aside as the edge map's transient
+/// budget. Deliberately conservative (an eighth, not a half): mining runs
+/// as a background catalog job while the user's slicer, browser, and the
+/// app itself are all still open, and this pass must never be the reason
+/// the OS starts swapping.
+const EDGE_MAP_RAM_FRACTION: u64 = 8;
+
+/// Worst-case bytes charged per triangle when sizing the edge-map cap to
+/// available RAM: ~3 unique edges per triangle, ~34 bytes per
+/// `HashMap<EdgeKey, u32>` entry (2 x 12-byte VertexKey-ish coordinate
+/// tuples plus hashbrown control-byte/bucket overhead), times ~1.5x
+/// headroom for the map's own growth/load-factor doubling. A clean
+/// manifold mesh (every edge shared by exactly two triangles, so the
+/// entry count and the triangle count are close) uses roughly half this in
+/// practice, but the recommendation sizes against the worst case on
+/// purpose: an open/leaky mesh — the exact thing this signal exists to
+/// catch — is also the shape most likely to hit it.
+const BYTES_PER_TRIANGLE_WORST_CASE: u64 = 150;
+
+/// Ceiling `recommended_edge_cap` will ever suggest, no matter how much RAM
+/// the machine reports: 30,000,000 triangles * 150 bytes/triangle ~= 4.5 GB
+/// of transient memory — about the most a single background mining pass
+/// should ever ask of any machine, workstation or not.
+const RECOMMENDED_EDGE_CAP_CEILING: u32 = 30_000_000;
+
+/// Pure formula behind `recommended_edge_cap`, split out so it's testable
+/// without mocking sysinfo. `total_ram_bytes` is the machine's total
+/// (not free/available) RAM, since the edge map competes with everything
+/// else running, not just the currently-free portion.
+///
+/// `total_ram / EDGE_MAP_RAM_FRACTION / BYTES_PER_TRIANGLE_WORST_CASE`,
+/// clamped to `[EDGE_STATS_MAX_TRIS, RECOMMENDED_EDGE_CAP_CEILING]`:
+///   - floor: nobody's setting regresses mining below what today's build
+///     already handles by default, even on a machine sysinfo can't read;
+///   - ceiling: ~4.5 GB transient is the most this pass should ever ask of
+///     any machine — a 128 GB render box gets the same cap as a 64 GB one.
+///
+/// Worked examples: 8 GB -> ~7M tris, 16 GB -> ~14M tris, 64 GB+ -> 30M
+/// (the ceiling, reached well before 64 GB).
+fn recommended_edge_cap_for(total_ram_bytes: u64) -> u32 {
+    if total_ram_bytes == 0 {
+        // sysinfo reported nothing usable — fall back to the safe floor
+        // rather than let a bogus 0/0 division stand in for "unlimited".
+        return EDGE_STATS_MAX_TRIS;
+    }
+    let budget_bytes = total_ram_bytes / EDGE_MAP_RAM_FRACTION;
+    let tris = budget_bytes / BYTES_PER_TRIANGLE_WORST_CASE;
+    tris.clamp(
+        u64::from(EDGE_STATS_MAX_TRIS),
+        u64::from(RECOMMENDED_EDGE_CAP_CEILING),
+    ) as u32
+}
+
+/// The edge-map triangle cap this machine can afford, derived from its
+/// total RAM (see `recommended_edge_cap_for` for the formula and clamp
+/// rationale). This is what settings::edge_stats_max_tris seeds to on
+/// first load, and what the frontend's "Auto" control restores without
+/// requiring a save first (see commands::get_recommended_edge_cap).
+pub fn recommended_edge_cap() -> u32 {
+    let sys = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
+    );
+    recommended_edge_cap_for(sys.total_memory())
+}
 
 /// Tally of one mine_geometry pass, reported in GeometryStatus::Completed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -62,7 +130,10 @@ pub struct GeometryOutcome {
 /// mid-read (bytes hashed != size at open) — no hash is trustworthy, the
 /// caller stores nothing. Inner Err: the bytes are fine (hash valid, worth
 /// storing for dup detection) but they aren't a well-formed binary STL.
-fn stream_mine(path: &str) -> std::io::Result<(String, Result<StlFacts, String>)> {
+///
+/// `edge_cap` is the settings-derived (or test-supplied) triangle ceiling
+/// for the edge-adjacency map — see FactsAccumulator::with_cap.
+fn stream_mine(path: &str, edge_cap: u32) -> std::io::Result<(String, Result<StlFacts, String>)> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let mut hasher = blake3::Hasher::new();
@@ -94,7 +165,7 @@ fn stream_mine(path: &str) -> std::io::Result<(String, Result<StlFacts, String>)
     let expected_len =
         (HEADER_LEN + COUNT_LEN) as u64 + tri_count as u64 * RECORD_LEN as u64;
     let mut acc = if tri_count > 0 && len == expected_len {
-        Some(FactsAccumulator::new(tri_count).expect("tri_count checked non-zero"))
+        Some(FactsAccumulator::with_cap(tri_count, edge_cap).expect("tri_count checked non-zero"))
     } else {
         None
     };
@@ -161,6 +232,12 @@ fn stream_mine(path: &str) -> std::io::Result<(String, Result<StlFacts, String>)
 ///     of a mining pass is to harvest what it can, not to guarantee every
 ///     file succeeds.
 ///
+/// A hash whose stored row already satisfies `edge_cap` (see
+/// db::geometry_satisfies) is `already_known` and never re-streamed; a hash
+/// stored under a smaller cap — `open_edges IS NULL` and its `tri_count`
+/// now fits `edge_cap` — is re-streamed and its row replaced, so raising
+/// the setting and re-running actually backfills the models it unblocks.
+///
 /// `cancel` is checked once per candidate, matching find_duplicates; on
 /// cancellation the same `AppError::UserCancelled` variant is returned so
 /// callers (see commands::start_geometry_scan) route it to Cancelled instead
@@ -168,6 +245,7 @@ fn stream_mine(path: &str) -> std::io::Result<(String, Result<StlFacts, String>)
 pub fn mine_geometry(
     conn: &Connection,
     cancel: &AtomicBool,
+    edge_cap: u32,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<GeometryOutcome, AppError> {
     let candidates = db::stl_geometry_candidates(conn)?;
@@ -181,13 +259,13 @@ pub fn mine_geometry(
         on_progress(index as u32, total);
 
         if let Some(hash) = known_hash.as_deref() {
-            if db::geometry_exists(conn, hash)? {
+            if db::geometry_satisfies(conn, hash, edge_cap)? {
                 outcome.already_known += 1;
                 continue;
             }
         }
 
-        let (hash, parsed) = match stream_mine(&path) {
+        let (hash, parsed) = match stream_mine(&path, edge_cap) {
             Ok(streamed) => streamed,
             Err(_) => {
                 outcome.failed += 1;
@@ -197,7 +275,7 @@ pub fn mine_geometry(
         if known_hash.is_none() {
             db::store_hash(conn, &path, &hash)?;
         }
-        if db::geometry_exists(conn, &hash)? {
+        if db::geometry_satisfies(conn, &hash, edge_cap)? {
             outcome.already_known += 1;
             continue;
         }
@@ -283,7 +361,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let outcome = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(
             outcome,
             GeometryOutcome {
@@ -294,7 +372,7 @@ mod tests {
         );
 
         let hash = db::known_hash(&conn, &path.to_string_lossy()).expect("hash stored as a side effect");
-        assert!(db::geometry_exists(&conn, &hash).unwrap());
+        assert!(db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
 
         let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
         assert_eq!(facts.len(), 1);
@@ -332,7 +410,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let first = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let first = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(first.mined, 1);
 
         // The file is gone; a re-read would surface as `failed`, not
@@ -340,7 +418,7 @@ mod tests {
         // + file_geometry row instead of touching disk again.
         fs::remove_file(&path).unwrap();
 
-        let second = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let second = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(
             second,
             GeometryOutcome {
@@ -385,7 +463,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &rows, &[model], &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let outcome = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(outcome.failed, 1);
         assert_eq!(outcome.mined, 1);
 
@@ -426,7 +504,7 @@ mod tests {
         db::store_file_geometry(&conn, bare_hash, &facts, 100).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let outcome = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(
             outcome,
             GeometryOutcome {
@@ -467,7 +545,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let outcome = mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(outcome, GeometryOutcome::default());
 
         fs::remove_dir_all(&dir).ok();
@@ -523,7 +601,7 @@ mod tests {
         db::replace_catalog(&mut conn, "/", &rows, &models, &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        mine_geometry(&conn, &cancel, |_, _| {}).unwrap();
+        mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
 
         let a_facts = db::model_geometry(&conn, &dir_a.to_string_lossy()).unwrap();
         assert_eq!(a_facts.len(), 1);
@@ -535,5 +613,196 @@ mod tests {
 
         fs::remove_dir_all(&dir_a).ok();
         fs::remove_dir_all(&dir_b).ok();
+    }
+
+    /// A 10mm axis-aligned cube's 12 outward-wound triangles, binary-STL
+    /// encoded — mirrors stl_facts::tests::cube_triangles (duplicated
+    /// locally since that helper is private to its own module). Only its
+    /// triangle count (12, bigger than a cap of 1) matters to the tests
+    /// below, not its exact geometry.
+    fn cube_stl() -> Vec<u8> {
+        let a = (0.0, 0.0, 0.0);
+        let b = (10.0, 0.0, 0.0);
+        let c = (10.0, 10.0, 0.0);
+        let d = (0.0, 10.0, 0.0);
+        let e = (0.0, 0.0, 10.0);
+        let f = (10.0, 0.0, 10.0);
+        let g = (10.0, 10.0, 10.0);
+        let h = (0.0, 10.0, 10.0);
+        build_binary_stl(&[
+            [a, c, b],
+            [a, d, c],
+            [e, f, g],
+            [e, g, h],
+            [a, b, f],
+            [a, f, e],
+            [d, g, c],
+            [d, h, g],
+            [a, h, d],
+            [a, e, h],
+            [b, c, g],
+            [b, g, f],
+        ])
+    }
+
+    #[test]
+    fn raising_the_cap_and_rerunning_backfills_a_capped_rows_edge_stats() {
+        let dir = test_dir("raise_cap");
+        let path = dir.join("cube.stl");
+        fs::write(&path, cube_stl()).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "cube.stl".into(),
+            extension: "stl".into(),
+            size_bytes: cube_stl().len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        // 12 triangles > cap of 1: edge stats skipped, the row stores NULL.
+        let first = mine_geometry(&conn, &cancel, 1, |_, _| {}).unwrap();
+        assert_eq!(first.mined, 1);
+
+        let hash = db::known_hash(&conn, &path.to_string_lossy()).expect("hash stored");
+        let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].open_edges, None);
+        assert!(!db::geometry_satisfies(&conn, &hash, 1000).unwrap());
+
+        // Same hash, same file still on disk, cap now covers all 12
+        // triangles: the stored NULL row doesn't satisfy the new cap, so it
+        // re-streams and replaces the row — counted `mined`, not
+        // `already_known`.
+        let second = mine_geometry(&conn, &cancel, 1000, |_, _| {}).unwrap();
+        assert_eq!(
+            second,
+            GeometryOutcome {
+                mined: 1,
+                already_known: 0,
+                failed: 0,
+            }
+        );
+
+        let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].open_edges, Some(0));
+        assert!(db::geometry_satisfies(&conn, &hash, 1000).unwrap());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_complete_row_is_still_skipped_no_matter_how_large_the_cap() {
+        let dir = test_dir("complete_row_any_cap");
+        let path = dir.join("tri.stl");
+        fs::write(&path, one_triangle_stl()).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "tri.stl".into(),
+            extension: "stl".into(),
+            size_bytes: one_triangle_stl().len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let first = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(first.mined, 1);
+
+        // File gone: any disk read would surface as `failed`, so
+        // `already_known` here proves a much larger cap on rerun didn't
+        // force a re-read of a row that already has open_edges populated.
+        fs::remove_file(&path).unwrap();
+
+        let second = mine_geometry(&conn, &cancel, 30_000_000, |_, _| {}).unwrap();
+        assert_eq!(
+            second,
+            GeometryOutcome {
+                mined: 0,
+                already_known: 1,
+                failed: 0,
+            }
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recommended_edge_cap_for_never_drops_below_the_floor() {
+        assert_eq!(recommended_edge_cap_for(0), EDGE_STATS_MAX_TRIS);
+        assert_eq!(recommended_edge_cap_for(1), EDGE_STATS_MAX_TRIS);
+        // 1 GiB: 1 GiB / 8 / 150 bytes/tri ~= 895K tris, under the floor.
+        let one_gib = 1024u64 * 1024 * 1024;
+        assert_eq!(recommended_edge_cap_for(one_gib), EDGE_STATS_MAX_TRIS);
+    }
+
+    #[test]
+    fn recommended_edge_cap_for_never_exceeds_the_ceiling() {
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(
+            recommended_edge_cap_for(64 * gib),
+            RECOMMENDED_EDGE_CAP_CEILING
+        );
+        assert_eq!(recommended_edge_cap_for(u64::MAX), RECOMMENDED_EDGE_CAP_CEILING);
+    }
+
+    #[test]
+    fn recommended_edge_cap_for_is_monotone_in_ram() {
+        let gib = 1024u64 * 1024 * 1024;
+        let sizes_gib = [1, 2, 4, 8, 16, 32, 64, 128];
+        let caps: Vec<u32> = sizes_gib
+            .iter()
+            .map(|gb| recommended_edge_cap_for(gb * gib))
+            .collect();
+        for pair in caps.windows(2) {
+            assert!(pair[0] <= pair[1], "caps not monotone in RAM: {:?}", caps);
+        }
+    }
+
+    /// Pins the doc comment's worked examples (8 GB -> ~7M, 16 GB -> ~14M,
+    /// 64 GB+ -> the 30M ceiling) so the constants and the prose can't
+    /// silently drift apart.
+    #[test]
+    fn recommended_edge_cap_for_matches_the_documented_worked_examples() {
+        let gib = 1024u64 * 1024 * 1024;
+
+        let eight_gb = recommended_edge_cap_for(8 * gib);
+        assert!((6_900_000..=7_300_000).contains(&eight_gb), "got {eight_gb}");
+
+        let sixteen_gb = recommended_edge_cap_for(16 * gib);
+        assert!(
+            (14_000_000..=14_600_000).contains(&sixteen_gb),
+            "got {sixteen_gb}"
+        );
+
+        assert_eq!(
+            recommended_edge_cap_for(64 * gib),
+            RECOMMENDED_EDGE_CAP_CEILING
+        );
     }
 }
