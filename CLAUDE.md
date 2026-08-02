@@ -62,12 +62,12 @@ stale honestly. Not in a file that outlives it.
 Delete on sight:
 
 - a doc line paraphrasing the signature under it (`/// Fold one record
-  into the running facts` over `fn push_record`)
+into the running facts` over `fn push_record`)
 - a doc on a type alias repeating the doc on its only user
 - a module header restating a file format a sibling module already
   documents — "repeated here so this file reads on its own" is the tell
 - prose asserting a guarantee a test already covers: the test name says
-  it and *breaks* when it stops being true
+  it and _breaks_ when it stops being true
 
 What survives is short, and answers "why not the obvious thing?":
 
@@ -78,7 +78,7 @@ type VertexKey = (u32, u32, u32);
 ```
 
 Two lines, not twenty. If the reasoning genuinely needs a paragraph, the
-*design* needs the paragraph — write it in the issue and link it.
+_design_ needs the paragraph — write it in the issue and link it.
 
 This binds `///` and `//!` exactly as much as `//`, including the doc
 comments that end up copied into `src/bindings.ts`. Volume is a smell on
