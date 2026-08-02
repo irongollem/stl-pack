@@ -6,6 +6,7 @@ pub mod normalize;
 pub mod pack;
 pub mod scanner;
 pub mod sidecar;
+pub mod stl_facts;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
