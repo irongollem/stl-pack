@@ -27,7 +27,7 @@ const OVAL_90x52: Cutter = {
 describe("regimentPlacements", () => {
   it("tiles squares edge-to-edge at gap 0 (pitch == nominal dimension)", () => {
     const placements = regimentPlacements(SQUARE_25, 1, 3, 0, { x: 0, y: 0 });
-    const xs = placements.map((p) => p.x_mm).sort((a, b) => a - b);
+    const xs = placements.map((p) => p.x_mm).toSorted((a, b) => a - b);
     expect(xs).toEqual([-25, 0, 25]);
     expect(placements.every((p) => p.y_mm === 0)).toBe(true);
     expect(placements.every((p) => p.rotation_deg === 0)).toBe(true);
@@ -36,10 +36,10 @@ describe("regimentPlacements", () => {
 
   it("adds the gap to the pitch on both axes", () => {
     const placements = regimentPlacements(SQUARE_25, 2, 2, 5, { x: 0, y: 0 });
-    const xs = [...new Set(placements.map((p) => p.x_mm))].sort(
+    const xs = [...new Set(placements.map((p) => p.x_mm))].toSorted(
       (a, b) => a - b,
     );
-    const ys = [...new Set(placements.map((p) => p.y_mm))].sort(
+    const ys = [...new Set(placements.map((p) => p.y_mm))].toSorted(
       (a, b) => a - b,
     );
     expect(xs[1] - xs[0]).toBeCloseTo(30); // 25 + 5
@@ -48,11 +48,11 @@ describe("regimentPlacements", () => {
 
   it("uses bounding width/depth for rounds and ovals", () => {
     const rounds = regimentPlacements(ROUND_32, 1, 2, 0, { x: 0, y: 0 });
-    const roundXs = rounds.map((p) => p.x_mm).sort((a, b) => a - b);
+    const roundXs = rounds.map((p) => p.x_mm).toSorted((a, b) => a - b);
     expect(roundXs[1] - roundXs[0]).toBeCloseTo(32);
 
     const ovals = regimentPlacements(OVAL_90x52, 2, 1, 0, { x: 0, y: 0 });
-    const ovalYs = ovals.map((p) => p.y_mm).sort((a, b) => a - b);
+    const ovalYs = ovals.map((p) => p.y_mm).toSorted((a, b) => a - b);
     expect(ovalYs[1] - ovalYs[0]).toBeCloseTo(52); // minor_mm is the y-pitch
   });
 

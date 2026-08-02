@@ -33,7 +33,7 @@ describe("renderLookSchema", () => {
     });
     expect(overrides["key.energy"]).toBe(5000);
     expect(overrides["marmoset.fill_energy_mult"]).toBe(2);
-    expect(dropped.sort()).toEqual(["key.loc", "not.a.knob", "roughness"]);
+    expect(dropped.toSorted()).toEqual(["key.loc", "not.a.knob", "roughness"]);
   });
 
   it("sanitizes non-objects to an empty diff", () => {

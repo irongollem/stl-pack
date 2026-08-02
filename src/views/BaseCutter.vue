@@ -1492,10 +1492,7 @@ const ungroupGroup = (group: PlacementGroup) => {
 const deleteGroup = (group: PlacementGroup) => {
   if (locked.value) return;
   pushUndoSnapshot();
-  // .sort(), not .toSorted(): the tsconfig lib target predates ES2023.
-  // Safe here regardless — memberIndices() already returns a fresh array
-  // (map+filter), so there's no shared reference to mutate out from under.
-  const indices = memberIndices(group).sort((a, b) => b - a);
+  const indices = memberIndices(group).toSorted((a, b) => b - a);
   for (const i of indices) placements.value.splice(i, 1);
   selectedIndex.value = reindexSelection(selectedIndex.value, indices);
   groups.value = groups.value.filter((g) => g.id !== group.id);

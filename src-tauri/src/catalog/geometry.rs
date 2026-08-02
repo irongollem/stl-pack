@@ -9,6 +9,15 @@
 //! spawn_blocking job in commands.rs) — mining and duplicate detection are
 //! both "walk the index, maybe touch disk once per candidate" passes over
 //! the same `files` table, just computing different facts.
+//!
+//! Staleness contract (same as the dup scanner's): candidates and their
+//! known hashes come from the files INDEX, not a fresh disk walk. A file
+//! edited on disk is picked up on the next catalog scan — replace_catalog
+//! only re-attaches a stored content_hash when path+size+mtime all still
+//! match, so a changed file re-enters mining hash-less and gets re-read,
+//! re-hashed, and re-mined under its new hash. Facts rows themselves can
+//! never go stale: keyed by content hash, same bytes ⇒ same geometry,
+//! forever. Rescan first, then mine.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
