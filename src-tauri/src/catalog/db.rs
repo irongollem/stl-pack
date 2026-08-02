@@ -378,7 +378,7 @@ fn init_schema(conn: &Connection) -> Result<(), AppError> {
     // v5/v6 while their FTS table still had SQLite's default whole-word
     // tokenizer. Replace (rather than merely refill) this derived table so
     // existing catalogs genuinely gain partial trigram matching.
-    if version >= 5 && version < 7 {
+    if (5..7).contains(&version) {
         conn.execute("DROP TABLE IF EXISTS models_fts", [])
             .map_err(|e| AppError::ConfigError(format!("Failed to drop old FTS: {}", e)))?;
         conn.execute(

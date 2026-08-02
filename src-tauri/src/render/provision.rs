@@ -115,7 +115,6 @@ fn sweep_stale_staging(root: &Path) {
 pub fn parse_blender_version(banner: &str) -> Option<(u32, u32, u32)> {
     let numbers = banner
         .trim_start_matches("Blender")
-        .trim_start()
         .split_whitespace()
         .next()?;
     let mut parts = numbers.split('.');
@@ -435,11 +434,13 @@ fn remove_old_versions(root: &Path, keep: &str) {
     }
 }
 
+/// A running download's job id and its cancel token.
+type ActiveProvisionJob = (String, Arc<Notify>);
+
 /// The one running download, if any. An Option, not a map like
 /// ACTIVE_RENDERS: two concurrent downloads of the same pinned Blender
 /// could only fight over the same final directory.
-static ACTIVE_PROVISION: Lazy<Mutex<Option<(String, Arc<Notify>)>>> =
-    Lazy::new(|| Mutex::new(None));
+static ACTIVE_PROVISION: Lazy<Mutex<Option<ActiveProvisionJob>>> = Lazy::new(|| Mutex::new(None));
 
 /// Kick off the managed download; progress arrives as
 /// BlenderProvisionStatus events carrying the returned job_id.

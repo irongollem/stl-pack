@@ -1064,7 +1064,8 @@ mod tests {
         // stored checksum donor without materializing the donor itself
         let shield = dir.join("shield.stl").to_string_lossy().into_owned();
         let extracted =
-            extract_paths_ephemeral(&dir, &[shield.clone()], &cancel, |_| true).unwrap();
+            extract_paths_ephemeral(&dir, std::slice::from_ref(&shield), &cancel, |_| true)
+                .unwrap();
         assert_eq!(extracted, vec![shield.clone()]);
         assert_eq!(fs::read(dir.join("shield.stl")).unwrap(), b"shared-arm-bytes!");
         assert!(!dir.join("body.stl").exists(), "unrequested files stay packed");
@@ -1073,7 +1074,7 @@ mod tests {
         assert!(dir.join(PACK_SIDECAR_NAME).is_file());
 
         // untouched extract cleans up; nothing else is harmed
-        let (removed, kept) = cleanup_ephemeral(&[shield.clone()]);
+        let (removed, kept) = cleanup_ephemeral(std::slice::from_ref(&shield));
         assert_eq!(removed, vec![shield]);
         assert!(kept.is_empty());
         assert!(!dir.join("shield.stl").exists());
@@ -1089,11 +1090,11 @@ mod tests {
         pack_model("0.0.0-test", &dir, None, &cancel, no_progress).unwrap();
 
         let body = dir.join("body.stl").to_string_lossy().into_owned();
-        extract_paths_ephemeral(&dir, &[body.clone()], &cancel, |_| true).unwrap();
+        extract_paths_ephemeral(&dir, std::slice::from_ref(&body), &cancel, |_| true).unwrap();
         // the slicer saved supports over our working copy
         fs::write(dir.join("body.stl"), b"user-edited-bytes-now-much-longer").unwrap();
 
-        let (removed, kept) = cleanup_ephemeral(&[body.clone()]);
+        let (removed, kept) = cleanup_ephemeral(std::slice::from_ref(&body));
         assert!(removed.is_empty());
         assert_eq!(kept, vec![body.clone()]);
         assert!(dir.join("body.stl").is_file(), "changed file survives");
@@ -1112,7 +1113,7 @@ mod tests {
         pack_model("0.0.0-test", &dir, None, &cancel, no_progress).unwrap();
 
         let body = dir.join("body.stl").to_string_lossy().into_owned();
-        extract_paths_ephemeral(&dir, &[body.clone()], &cancel, |_| true).unwrap();
+        extract_paths_ephemeral(&dir, std::slice::from_ref(&body), &cancel, |_| true).unwrap();
         unpack_model(&dir).unwrap();
 
         // the file is permanent now — cleanup must not delete it

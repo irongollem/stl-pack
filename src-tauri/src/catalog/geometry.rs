@@ -28,15 +28,17 @@ use rusqlite::Connection;
 use crate::error::AppError;
 
 use super::db;
-use super::stl_facts::parse_binary_stl_facts;
+use super::stl_facts::{parse_header, FactsAccumulator, StlFacts, COUNT_LEN, HEADER_LEN, RECORD_LEN};
 
-/// Above this size, a candidate is skipped (`skipped_too_large`) instead of
-/// read into memory whole — stl_facts has no streaming mode, it parses a
-/// byte slice in one shot, so this is the only backstop against a hostile
-/// or just enormous scenery STL sitting in a catalog folder forcing a
-/// multi-GB allocation during a routine mining pass. 1 GiB comfortably
-/// covers every printable mini this app is meant for.
-pub const MAX_MINE_BYTES: u64 = 1024 * 1024 * 1024;
+/// Bytes streamed per read while mining: a whole number of 50-byte records
+/// (~800 KiB) so record parsing never straddles a chunk boundary. This is
+/// the mining pass's ENTIRE per-file memory footprint no matter how large
+/// the file — a 4 GiB display bust streams through the same buffer as a
+/// 4 MB mini. (There is deliberately no file-size cap: a size cutoff would
+/// make big files silently vanish from the geometry report, which reads as
+/// "file missing" in the drawer. The only bounded-by-triangle-count cost is
+/// stl_facts' edge map, which caps itself.)
+const STREAM_CHUNK_BYTES: usize = RECORD_LEN * 16 * 1024;
 
 /// Tally of one mine_geometry pass, reported in GeometryStatus::Completed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,8 +52,94 @@ pub struct GeometryOutcome {
     /// Unreadable (missing file, permission error) or unparsable (not a
     /// well-formed binary STL) — one bad file never aborts the run.
     pub failed: u32,
-    /// Over MAX_MINE_BYTES; not read at all.
-    pub skipped_too_large: u32,
+}
+
+/// One candidate, streamed once: every byte goes through the blake3 hasher,
+/// and — when the byte length matches the header's declared triangle count —
+/// through a FactsAccumulator in the same pass.
+///
+/// Outer Err (io): the file couldn't be read completely, or its size changed
+/// mid-read (bytes hashed != size at open) — no hash is trustworthy, the
+/// caller stores nothing. Inner Err: the bytes are fine (hash valid, worth
+/// storing for dup detection) but they aren't a well-formed binary STL.
+fn stream_mine(path: &str) -> std::io::Result<(String, Result<StlFacts, String>)> {
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata()?.len();
+    let mut hasher = blake3::Hasher::new();
+
+    let mut preamble = [0u8; HEADER_LEN + COUNT_LEN];
+    let mut got = 0usize;
+    while got < preamble.len() {
+        let n = file.read(&mut preamble[got..])?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    hasher.update(&preamble[..got]);
+    if got < preamble.len() {
+        // Shorter than any binary STL can be; the whole file is hashed.
+        if got as u64 != len {
+            return Err(std::io::Error::other("file changed while being read"));
+        }
+        return Ok((
+            hasher.finalize().to_hex().to_string(),
+            Err(format!(
+                "file is only {got} bytes — too short for a binary STL's 84-byte header+count"
+            )),
+        ));
+    }
+
+    let tri_count = parse_header(&preamble).expect("preamble is exactly header+count sized");
+    let expected_len =
+        (HEADER_LEN + COUNT_LEN) as u64 + tri_count as u64 * RECORD_LEN as u64;
+    let mut acc = if tri_count > 0 && len == expected_len {
+        Some(FactsAccumulator::new(tri_count).expect("tri_count checked non-zero"))
+    } else {
+        None
+    };
+    let parse_err = if tri_count == 0 {
+        "binary STL header reports zero triangles".to_string()
+    } else {
+        format!(
+            "byte length {len} does not match the {tri_count} triangles the header declares \
+             (expected exactly {expected_len} bytes) — not a well-formed binary STL, or an ASCII STL"
+        )
+    };
+
+    let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
+    let mut total: u64 = got as u64;
+    loop {
+        // Fill the chunk completely (or to EOF): when the length formula
+        // matched, every full chunk is then a whole number of records, and
+        // the final short chunk still is — total record bytes divide by 50.
+        let mut filled = 0usize;
+        while filled < buf.len() {
+            let n = file.read(&mut buf[filled..])?;
+            if n == 0 {
+                break;
+            }
+            filled += n;
+        }
+        if filled == 0 {
+            break;
+        }
+        hasher.update(&buf[..filled]);
+        total += filled as u64;
+        if let Some(acc) = acc.as_mut() {
+            for record in buf[..filled].chunks_exact(RECORD_LEN) {
+                acc.push_record(record.try_into().expect("chunks_exact yields RECORD_LEN"));
+            }
+        }
+    }
+    if total != len {
+        // Grew or shrank under us (NAS sync, slicer re-save): neither the
+        // hash nor any partial facts describe a coherent file.
+        return Err(std::io::Error::other("file changed while being read"));
+    }
+
+    let hash = hasher.finalize().to_hex().to_string();
+    Ok((hash, acc.map(FactsAccumulator::finish).ok_or(parse_err)))
 }
 
 /// Mine bbox/volume/open-edge facts for every loose (unpacked) STL the
@@ -60,17 +148,18 @@ pub struct GeometryOutcome {
 /// For each candidate:
 ///   - if its files row already carries a content_hash AND file_geometry
 ///     already has that hash, it's `already_known` — no disk access at all;
-///   - otherwise the file is read and hashed (bare blake3 hex). A files row
-///     that lacked a content_hash gets one stored via `db::store_hash` as a
-///     side effect — free duplicate-detection fodder, since a later dup
-///     scan then skips a disk read for this path entirely;
+///   - otherwise the file is STREAMED once through a fixed ~800 KiB buffer
+///     (see stream_mine — no size limit, no whole-file allocation), hashing
+///     and fact-accumulating in the same pass. A files row that lacked a
+///     content_hash gets one stored via `db::store_hash` as a side effect —
+///     free duplicate-detection fodder, since a later dup scan then skips a
+///     disk read for this path entirely;
 ///   - if that hash turns out to already be known (a duplicate of a file
 ///     mined earlier this same run, or one whose files row hadn't recorded
 ///     the hash yet), it's `already_known` too;
-///   - otherwise the buffered bytes are parsed with stl_facts. A parse
-///     failure counts as `failed` and mining continues — the point of a
-///     mining pass is to harvest what it can, not to guarantee every file
-///     succeeds.
+///   - a parse failure counts as `failed` and mining continues — the point
+///     of a mining pass is to harvest what it can, not to guarantee every
+///     file succeeds.
 ///
 /// `cancel` is checked once per candidate, matching find_duplicates; on
 /// cancellation the same `AppError::UserCancelled` variant is returned so
@@ -98,36 +187,13 @@ pub fn mine_geometry(
             }
         }
 
-        // Open + stat before reading: a candidate over MAX_MINE_BYTES must
-        // never be read into memory at all, so the cap has to be checked
-        // against the file's real size, not the length of a buffer we've
-        // already paid to fill.
-        let mut file = match std::fs::File::open(&path) {
-            Ok(f) => f,
+        let (hash, parsed) = match stream_mine(&path) {
+            Ok(streamed) => streamed,
             Err(_) => {
                 outcome.failed += 1;
                 continue;
             }
         };
-        let size = match file.metadata() {
-            Ok(m) => m.len(),
-            Err(_) => {
-                outcome.failed += 1;
-                continue;
-            }
-        };
-        if size > MAX_MINE_BYTES {
-            outcome.skipped_too_large += 1;
-            continue;
-        }
-        let mut bytes = Vec::with_capacity(size as usize);
-        if file.read_to_end(&mut bytes).is_err() {
-            outcome.failed += 1;
-            continue;
-        }
-        drop(file);
-
-        let hash = blake3::hash(&bytes).to_hex().to_string();
         if known_hash.is_none() {
             db::store_hash(conn, &path, &hash)?;
         }
@@ -136,7 +202,7 @@ pub fn mine_geometry(
             continue;
         }
 
-        match parse_binary_stl_facts(&bytes) {
+        match parsed {
             Ok(facts) => {
                 let derived_at = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -156,6 +222,7 @@ pub fn mine_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::stl_facts::parse_binary_stl_facts;
     use crate::catalog::{FileRow, ModelRow};
     use std::fs;
 
@@ -223,7 +290,6 @@ mod tests {
                 mined: 1,
                 already_known: 0,
                 failed: 0,
-                skipped_too_large: 0,
             }
         );
 
@@ -281,7 +347,6 @@ mod tests {
                 mined: 0,
                 already_known: 1,
                 failed: 0,
-                skipped_too_large: 0,
             }
         );
 
@@ -368,7 +433,6 @@ mod tests {
                 mined: 0,
                 already_known: 1,
                 failed: 0,
-                skipped_too_large: 0,
             }
         );
 

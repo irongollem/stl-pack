@@ -769,6 +769,10 @@ pub fn build_gen_landscape_command(
     cmd
 }
 
+/// The `LandscapeToken::Generated` payload's fields: out path, glb path,
+/// dims_mm, vert count, manifold.
+type GeneratedLandscape = (String, Option<String>, [f64; 3], u32, bool);
+
 /// Spawn Blender against `params_path` and parse its stdout into
 /// `LandscapeToken`s, invoking `on_token` for each as it arrives. Returns
 /// the `Generated` payload's fields on success, or `(error, stdout_tail)`.
@@ -786,12 +790,12 @@ pub async fn spawn_and_parse<F>(
     params_path: &Path,
     cancel_token: &Notify,
     mut on_token: F,
-) -> Result<(String, Option<String>, [f64; 3], u32, bool), (AppError, String)>
+) -> Result<GeneratedLandscape, (AppError, String)>
 where
     F: FnMut(&LandscapeToken),
 {
     let cmd = build_gen_landscape_command(blender, script, params_path);
-    let mut generated: Option<(String, Option<String>, [f64; 3], u32, bool)> = None;
+    let mut generated: Option<GeneratedLandscape> = None;
     let mut failure_reason: Option<String> = None;
 
     let merge_tail = |out: String, err: String| {

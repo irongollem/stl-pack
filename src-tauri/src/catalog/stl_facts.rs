@@ -41,9 +41,9 @@ pub struct StlFacts {
 /// a routine catalog scan. bbox and volume, which need no map, still run.
 pub const EDGE_STATS_MAX_TRIS: u32 = 1_500_000;
 
-const HEADER_LEN: usize = 80;
-const COUNT_LEN: usize = 4;
-const RECORD_LEN: usize = 50; // 12 (normal) + 3*12 (verts) + 2 (attr byte count)
+pub(crate) const HEADER_LEN: usize = 80;
+pub(crate) const COUNT_LEN: usize = 4;
+pub(crate) const RECORD_LEN: usize = 50; // 12 (normal) + 3*12 (verts) + 2 (attr byte count)
 
 /// A vertex keyed by the exact raw bit pattern of its three f32 coordinates
 /// (not the float values themselves) — two vertices are "the same" iff all
@@ -67,80 +67,64 @@ fn edge_key(a: VertexKey, b: VertexKey) -> EdgeKey {
     }
 }
 
-/// Parse a binary STL's header + triangle records into bbox/volume/edge
-/// facts. Pure function of the bytes — no filesystem access, so it's
-/// directly unit-testable against hand-built byte arrays (no fixture file
-/// needed).
-///
-/// Rejects (with a human-readable reason, not a panic):
-///   - anything shorter than the 84-byte header+count
-///   - a byte length that doesn't match `84 + triangle_count * 50` exactly
-///     (covers both a truncated/corrupt file and an ASCII STL, which has no
-///     reason to land on this exact formula)
-///   - a triangle count of zero (an STL with no geometry has no facts)
-pub fn parse_binary_stl_facts(bytes: &[u8]) -> Result<StlFacts, String> {
-    parse_binary_stl_facts_with_cap(bytes, EDGE_STATS_MAX_TRIS)
-}
-
-/// Same as `parse_binary_stl_facts`, but with the edge-map triangle cap
-/// passed in explicitly rather than fixed to `EDGE_STATS_MAX_TRIS`. Split
-/// out purely so tests can exercise the cap boundary with a tiny value
-/// instead of building a multi-million-triangle STL.
-fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFacts, String> {
-    if bytes.len() < HEADER_LEN + COUNT_LEN {
-        return Err(format!(
-            "file is only {} bytes — too short for a binary STL's 84-byte header+count",
-            bytes.len()
-        ));
-    }
-    let count_bytes: [u8; 4] = bytes[HEADER_LEN..HEADER_LEN + COUNT_LEN]
-        .try_into()
-        .expect("slice of exactly 4 bytes");
-    let tri_count = u32::from_le_bytes(count_bytes);
-    if tri_count == 0 {
-        return Err("binary STL header reports zero triangles".to_string());
-    }
-
-    let expected_len = HEADER_LEN + COUNT_LEN + tri_count as usize * RECORD_LEN;
-    if bytes.len() != expected_len {
-        return Err(format!(
-            "byte length {} does not match the {} triangles the header declares \
-             (expected exactly {} bytes) — not a well-formed binary STL, or an ASCII STL",
-            bytes.len(),
-            tri_count,
-            expected_len
-        ));
-    }
-
-    let mut min = [f32::INFINITY; 3];
-    let mut max = [f32::NEG_INFINITY; 3];
-    let mut volume_acc = 0.0f64;
+/// Incremental accumulator over 50-byte triangle records, so a caller can
+/// stream a multi-GB STL through a fixed buffer instead of holding the
+/// whole file in memory (catalog mining does exactly that — see
+/// catalog::geometry). `parse_binary_stl_facts` is the convenience wrapper
+/// for callers (and tests) that do have the full byte slice.
+pub struct FactsAccumulator {
+    tri_count: u32,
+    min: [f32; 3],
+    max: [f32; 3],
+    volume_acc: f64,
     // None when tri_count exceeds the cap: no per-edge allocation at all,
     // not even an empty map, so the skip actually bounds memory.
-    let mut edge_counts: Option<HashMap<EdgeKey, u32>> = if tri_count <= edge_cap {
-        Some(HashMap::new())
-    } else {
-        None
-    };
+    edge_counts: Option<HashMap<EdgeKey, u32>>,
+}
 
-    let mut offset = HEADER_LEN + COUNT_LEN;
-    for _ in 0..tri_count {
-        offset += 12; // skip the facet normal
+impl FactsAccumulator {
+    /// `tri_count` is the header's declared triangle count — the caller is
+    /// responsible for validating the file's byte length against it (the
+    /// wrapper below does; the streaming miner checks the stat size) and
+    /// for pushing exactly that many records.
+    pub fn new(tri_count: u32) -> Result<Self, String> {
+        Self::with_cap(tri_count, EDGE_STATS_MAX_TRIS)
+    }
+
+    /// Cap passed explicitly purely so tests can exercise the boundary with
+    /// a tiny value instead of building a multi-million-triangle STL.
+    fn with_cap(tri_count: u32, edge_cap: u32) -> Result<Self, String> {
+        if tri_count == 0 {
+            return Err("binary STL header reports zero triangles".to_string());
+        }
+        Ok(Self {
+            tri_count,
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+            volume_acc: 0.0,
+            edge_counts: (tri_count <= edge_cap).then(HashMap::new),
+        })
+    }
+
+    /// Fold one 50-byte triangle record (normal + 3 vertices + attribute
+    /// count) into the running facts.
+    pub fn push_record(&mut self, record: &[u8; RECORD_LEN]) {
+        let mut offset = 12; // skip the facet normal
 
         let mut verts_f32 = [[0.0f32; 3]; 3];
         let mut verts_key = [(0u32, 0u32, 0u32); 3];
         for (v, key) in verts_f32.iter_mut().zip(verts_key.iter_mut()) {
             let mut raw = [0u32; 3];
             for (axis, raw_axis) in raw.iter_mut().enumerate() {
-                let coord_bytes: [u8; 4] = bytes[offset..offset + 4]
+                let coord_bytes: [u8; 4] = record[offset..offset + 4]
                     .try_into()
                     .expect("slice of exactly 4 bytes");
                 let value = f32::from_le_bytes(coord_bytes);
-                if value < min[axis] {
-                    min[axis] = value;
+                if value < self.min[axis] {
+                    self.min[axis] = value;
                 }
-                if value > max[axis] {
-                    max[axis] = value;
+                if value > self.max[axis] {
+                    self.max[axis] = value;
                 }
                 v[axis] = value;
                 *raw_axis = u32::from_le_bytes(coord_bytes);
@@ -148,7 +132,6 @@ fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFac
             }
             *key = (raw[0], raw[1], raw[2]);
         }
-        offset += 2; // attribute byte count
 
         let v0 = verts_f32[0].map(f64::from);
         let v1 = verts_f32[1].map(f64::from);
@@ -159,9 +142,9 @@ fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFac
             v1[0] * v2[1] - v1[1] * v2[0],
         ];
         let dot = v0[0] * cross[0] + v0[1] * cross[1] + v0[2] * cross[2];
-        volume_acc += dot / 6.0;
+        self.volume_acc += dot / 6.0;
 
-        if let Some(counts) = edge_counts.as_mut() {
+        if let Some(counts) = self.edge_counts.as_mut() {
             // A degenerate triangle (a repeated vertex) still yields three
             // well-defined edge keys — some just come out equal to each
             // other — so this can't panic or under/overcount; it merely
@@ -178,17 +161,85 @@ fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFac
         }
     }
 
-    let open_edge_count = edge_counts.map(|counts| {
-        counts.values().filter(|&&count| count != 2).count() as u32
-    });
+    pub fn finish(self) -> StlFacts {
+        let open_edge_count = self
+            .edge_counts
+            .map(|counts| counts.values().filter(|&&count| count != 2).count() as u32);
+        StlFacts {
+            tri_count: self.tri_count,
+            min: (self.min[0], self.min[1], self.min[2]),
+            max: (self.max[0], self.max[1], self.max[2]),
+            volume_mm3: self.volume_acc.abs(),
+            open_edge_count,
+        }
+    }
+}
 
-    Ok(StlFacts {
-        tri_count,
-        min: (min[0], min[1], min[2]),
-        max: (max[0], max[1], max[2]),
-        volume_mm3: volume_acc.abs(),
-        open_edge_count,
-    })
+/// Parse a binary STL's declared triangle count out of its 84-byte
+/// header+count preamble. Shared by the whole-slice wrapper below and the
+/// streaming miner, so the two can never disagree on the header format.
+pub(crate) fn parse_header(preamble: &[u8]) -> Result<u32, String> {
+    if preamble.len() < HEADER_LEN + COUNT_LEN {
+        return Err(format!(
+            "file is only {} bytes — too short for a binary STL's 84-byte header+count",
+            preamble.len()
+        ));
+    }
+    let count_bytes: [u8; 4] = preamble[HEADER_LEN..HEADER_LEN + COUNT_LEN]
+        .try_into()
+        .expect("slice of exactly 4 bytes");
+    Ok(u32::from_le_bytes(count_bytes))
+}
+
+/// Parse a binary STL's header + triangle records into bbox/volume/edge
+/// facts. Pure function of the bytes, kept test-only since production
+/// mining streams through FactsAccumulator instead of buffering whole
+/// files — this wrapper is how the accumulator's math gets exercised
+/// against hand-built byte arrays (no fixture file needed).
+///
+/// Rejects (with a human-readable reason, not a panic):
+///   - anything shorter than the 84-byte header+count
+///   - a byte length that doesn't match `84 + triangle_count * 50` exactly
+///     (covers both a truncated/corrupt file and an ASCII STL, which has no
+///     reason to land on this exact formula)
+///   - a triangle count of zero (an STL with no geometry has no facts)
+#[cfg(test)]
+pub fn parse_binary_stl_facts(bytes: &[u8]) -> Result<StlFacts, String> {
+    parse_binary_stl_facts_with_cap(bytes, EDGE_STATS_MAX_TRIS)
+}
+
+/// Same as `parse_binary_stl_facts`, but with the edge-map triangle cap
+/// passed in explicitly rather than fixed to `EDGE_STATS_MAX_TRIS`. Split
+/// out purely so tests can exercise the cap boundary with a tiny value
+/// instead of building a multi-million-triangle STL.
+#[cfg(test)]
+fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFacts, String> {
+    let tri_count = parse_header(bytes)?;
+    if tri_count == 0 {
+        return Err("binary STL header reports zero triangles".to_string());
+    }
+
+    let expected_len = HEADER_LEN + COUNT_LEN + tri_count as usize * RECORD_LEN;
+    if bytes.len() != expected_len {
+        return Err(format!(
+            "byte length {} does not match the {} triangles the header declares \
+             (expected exactly {} bytes) — not a well-formed binary STL, or an ASCII STL",
+            bytes.len(),
+            tri_count,
+            expected_len
+        ));
+    }
+
+    let mut acc = FactsAccumulator::with_cap(tri_count, edge_cap)?;
+    let mut offset = HEADER_LEN + COUNT_LEN;
+    for _ in 0..tri_count {
+        let record: &[u8; RECORD_LEN] = bytes[offset..offset + RECORD_LEN]
+            .try_into()
+            .expect("slice of exactly RECORD_LEN bytes");
+        acc.push_record(record);
+        offset += RECORD_LEN;
+    }
+    Ok(acc.finish())
 }
 
 #[cfg(test)]

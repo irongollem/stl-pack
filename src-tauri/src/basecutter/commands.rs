@@ -181,11 +181,14 @@ pub fn validate_placements(placements: &[Placement], plinth: &PlinthParams) -> R
     Ok(())
 }
 
+/// A running base-cut job's id and its cancel token.
+type ActiveBaseCutJob = (String, Arc<Notify>);
+
 /// The single running base-cut job, if any (id + its cancel token). Unlike
 /// render's ACTIVE_RENDERS map, only one base-cut job may run at a time
 /// (docs/BASECUTTER.md "Job pipeline") — a plain Option is the simple guard
 /// the doc calls for, no map needed.
-static ACTIVE_BASE_CUT: Lazy<Mutex<Option<(String, Arc<Notify>)>>> = Lazy::new(|| Mutex::new(None));
+static ACTIVE_BASE_CUT: Lazy<Mutex<Option<ActiveBaseCutJob>>> = Lazy::new(|| Mutex::new(None));
 
 fn output_is_inside_catalog(output: &str, roots: &[String]) -> bool {
     let normalize = |path: &str| {
@@ -663,10 +666,10 @@ fn repair_plinth_base_exports_with_names(
             };
             let object = value.as_object_mut().expect("checked object above");
             let before = serde_json::to_string(object).unwrap_or_default();
-            if !object
+            if object
                 .get("id")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| Uuid::parse_str(id).is_ok())
+                .is_none_or(|id| Uuid::parse_str(id).is_err())
             {
                 object.insert(
                     "id".to_string(),
@@ -1648,7 +1651,7 @@ mod tests {
         let missing = root.path().join("nope.stl").to_string_lossy().into_owned();
 
         let err = export_cuts(
-            &[missing.clone()],
+            std::slice::from_ref(&missing),
             &root.path().to_string_lossy(),
             "Group",
             &roots,
@@ -1913,7 +1916,7 @@ mod tests {
         };
 
         let first = export_cut_artifacts(
-            &[artifact.clone()],
+            std::slice::from_ref(&artifact),
             &root.path().to_string_lossy(),
             "Marsh Temple",
             &roots,

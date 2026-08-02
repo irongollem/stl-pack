@@ -161,7 +161,6 @@ pub struct GeometryCompletedStatus {
     pub mined: u32,
     pub already_known: u32,
     pub failed: u32,
-    pub skipped_too_large: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]

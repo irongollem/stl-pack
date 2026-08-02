@@ -526,7 +526,6 @@ pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppErr
                     mined: outcome.mined,
                     already_known: outcome.already_known,
                     failed: outcome.failed,
-                    skipped_too_large: outcome.skipped_too_large,
                 })
                 .emit(&app_handle)
                 .ok();
@@ -2424,7 +2423,7 @@ mod tests {
             [s(&newt.join("raw")), s(&newt.join("supported")), s(&troll.join("raw"))]
                 .into_iter()
                 .collect();
-        let mut units = consolidate_trash_units(&conn, &doomed, &[root_s.clone()]);
+        let mut units = consolidate_trash_units(&conn, &doomed, std::slice::from_ref(&root_s));
         units.sort();
         assert_eq!(
             units,

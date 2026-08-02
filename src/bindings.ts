@@ -1669,7 +1669,7 @@ export type GeneratedPieceKind = "pebble" | "rock" | "twig" | "grass" | "mushroo
  */
 export type GeneratorPreset = { id: string; label: string; params: LandscapeParams }
 export type GeometryCancelledStatus = { job_id: string }
-export type GeometryCompletedStatus = { job_id: string; mined: number; already_known: number; failed: number; skipped_too_large: number }
+export type GeometryCompletedStatus = { job_id: string; mined: number; already_known: number; failed: number }
 export type GeometryFailedStatus = { job_id: string; error: string }
 export type GeometryProgressStatus = { job_id: string; processed: number; total: number }
 export type GeometryStartedStatus = { job_id: string }

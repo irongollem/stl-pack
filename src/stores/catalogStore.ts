@@ -2483,14 +2483,11 @@ export const useCatalogStore = defineStore("catalog", () => {
   watch(geoCompletedCount, async () => {
     const summary = geoSummary.value;
     if (summary) {
-      const { mined, already_known, failed, skipped_too_large } = summary;
+      const { mined, already_known, failed } = summary;
       toastStore.addToast(
         `Mined geometry for ${mined} file${mined === 1 ? "" : "s"}` +
           (already_known ? ` · ${already_known} already known` : "") +
-          (failed ? ` · ${failed} failed` : "") +
-          (skipped_too_large
-            ? ` · ${skipped_too_large} skipped (too large)`
-            : ""),
+          (failed ? ` · ${failed} failed` : ""),
         failed ? "warning" : "success",
       );
     }

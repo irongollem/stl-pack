@@ -36,6 +36,24 @@ pub(crate) fn unique_path(path: PathBuf) -> PathBuf {
     unreachable!("ran out of integers before file names")
 }
 
+pub fn calculate_total_size(
+    group_and_model_dirs: &[PathBuf],
+    files_for_3pk: &[PathBuf],
+    files_for_zip: &[PathBuf],
+) -> Result<(u32, u32), AppError> {
+    let (group_and_model_size, group_and_model_files) =
+        compressors::determine_dir_size_kb(group_and_model_dirs)?;
+    let (files_for_3pk_size, files_for_3pk_count) =
+        compressors::determine_dir_size_kb(files_for_3pk)?;
+    let (files_for_zip_size, files_for_zip_count) =
+        compressors::determine_dir_size_kb(files_for_zip)?;
+
+    let total_size = group_and_model_size + files_for_3pk_size + files_for_zip_size;
+    let total_files = group_and_model_files + files_for_3pk_count + files_for_zip_count;
+
+    Ok((total_size, total_files))
+}
+
 #[cfg(test)]
 mod unique_path_tests {
     use super::*;
@@ -93,22 +111,4 @@ mod unique_path_tests {
         std::fs::write(dir.path().join("cut"), b"x").unwrap();
         assert_eq!(unique_path(dir.path().join("cut")), dir.path().join("cut-1"));
     }
-}
-
-pub fn calculate_total_size(
-    group_and_model_dirs: &[PathBuf],
-    files_for_3pk: &[PathBuf],
-    files_for_zip: &[PathBuf],
-) -> Result<(u32, u32), AppError> {
-    let (group_and_model_size, group_and_model_files) =
-        compressors::determine_dir_size_kb(group_and_model_dirs)?;
-    let (files_for_3pk_size, files_for_3pk_count) =
-        compressors::determine_dir_size_kb(files_for_3pk)?;
-    let (files_for_zip_size, files_for_zip_count) =
-        compressors::determine_dir_size_kb(files_for_zip)?;
-
-    let total_size = group_and_model_size + files_for_3pk_size + files_for_zip_size;
-    let total_files = group_and_model_files + files_for_3pk_count + files_for_zip_count;
-
-    Ok((total_size, total_files))
 }
