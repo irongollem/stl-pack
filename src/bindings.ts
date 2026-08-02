@@ -376,11 +376,8 @@ async startDuplicateScan() : Promise<Result<string, AppError>> {
 }
 },
 /**
- * Backend mining stage of issue #15: parse every loose STL the catalog
- * knows about for bbox/volume/open-edge facts, one row per distinct
- * content hash. Mirrors start_duplicate_scan's shape exactly — same job
- * registry, same "pack:" exclusion (a pack job deletes the loose bytes
- * mining is busy reading), same throttled progress stream.
+ * Runs as a catalog job; excluded while a pack job could be deleting
+ * the loose bytes mining reads.
  */
 async startGeometryScan() : Promise<Result<string, AppError>> {
     try {
@@ -391,12 +388,7 @@ async startGeometryScan() : Promise<Result<string, AppError>> {
 }
 },
 /**
- * The edge-stats triangle cap this machine's RAM would suggest, for the
- * settings UI's "Auto" control to show/restore without first saving a
- * value — settings::get_settings seeds edge_stats_max_tris to the same
- * number on first load, but a user who already has a stored value needs a
- * way to see (and revert to) what "Auto" would pick without overwriting
- * their setting first.
+ * What "Auto" would pick, without overwriting the stored setting.
  */
 async getRecommendedEdgeCap() : Promise<Result<number, AppError>> {
     try {
@@ -474,11 +466,6 @@ async getCatalogModelFiles(dirPath: string, variantKey: string | null) : Promise
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * A model dir's mined per-file geometry (issue #15) — only files whose
- * content hash has been mined show up; run start_geometry_scan first to
- * populate file_geometry.
- */
 async getModelGeometry(dirPath: string) : Promise<Result<ModelFileGeometry[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_model_geometry", { dirPath }) };
@@ -1689,11 +1676,6 @@ export type GeometryCompletedStatus = { job_id: string; mined: number; already_k
 export type GeometryFailedStatus = { job_id: string; error: string }
 export type GeometryProgressStatus = { job_id: string; processed: number; total: number }
 export type GeometryStartedStatus = { job_id: string }
-/**
- * Backend mining stage progress (issue #15) — shaped exactly like
- * DuplicateStatus, since mine_geometry walks the index the same way
- * find_duplicates does (see catalog::geometry's module doc).
- */
 export type GeometryStatus = { Started: GeometryStartedStatus } | { Progress: GeometryProgressStatus } | { Completed: GeometryCompletedStatus } | { Failed: GeometryFailedStatus } | { Cancelled: GeometryCancelledStatus }
 /**
  * Emissive glow spec for `MaterialPalette.glow` — lava-only today (the
@@ -1932,12 +1914,7 @@ thumbnail_url: string | null;
 image_url: string | null }
 export type MinihoardStatus = { Line: MinihoardLine } | { Finished: MinihoardFinished }
 /**
- * One file's mined geometry facts (issue #15 backend mining stage),
- * joined from file_geometry via the file's content_hash — a duplicate file
- * (any path, same bytes) shows the same facts without ever being re-parsed.
- * x_mm/y_mm/z_mm are the STL's bounding-box dimensions (max − min per
- * axis); open_edges is None when the mesh exceeded
- * stl_facts::EDGE_STATS_MAX_TRIS and edge stats were skipped, not "clean".
+ * x/y/z are bbox extents; open_edges None means skipped, not clean.
  */
 export type ModelFileGeometry = { file_name: string; tri_count: number; x_mm: number; y_mm: number; z_mm: number; volume_mm3: number; open_edges: number | null }
 export type ModelLocation = { Local: string } | { External: string }

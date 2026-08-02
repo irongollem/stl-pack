@@ -1,23 +1,7 @@
-//! Backend mining stage of issue #15: turns each loose STL the catalog
-//! already knows about into a row of stl_facts (bbox, volume, open-edge
-//! count) in `file_geometry`, keyed by the file's BARE blake3 content hash
-//! so mining any given set of bytes ever happens once, no matter how many
-//! catalog paths (duplicates, re-scans) point at them.
-//!
-//! Deliberately mirrors catalog::dups::find_duplicates in shape (a
-//! `Connection` + cancel flag + progress callback, called from a
-//! spawn_blocking job in commands.rs) — mining and duplicate detection are
-//! both "walk the index, maybe touch disk once per candidate" passes over
-//! the same `files` table, just computing different facts.
-//!
-//! Staleness contract (same as the dup scanner's): candidates and their
-//! known hashes come from the files INDEX, not a fresh disk walk. A file
-//! edited on disk is picked up on the next catalog scan — replace_catalog
-//! only re-attaches a stored content_hash when path+size+mtime all still
-//! match, so a changed file re-enters mining hash-less and gets re-read,
-//! re-hashed, and re-mined under its new hash. Facts rows themselves can
-//! never go stale: keyed by content hash, same bytes ⇒ same geometry,
-//! forever. Rescan first, then mine.
+//! Geometry mining: file_geometry rows keyed by bare blake3 content hash,
+//! so any given bytes are mined once across every path that holds them.
+//! Candidates come from the files index, not a disk walk — a file edited
+//! on disk re-mines only after a rescan drops its stored hash.
 
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,55 +17,26 @@ use super::stl_facts::{
     parse_header, FactsAccumulator, StlFacts, COUNT_LEN, EDGE_STATS_MAX_TRIS, HEADER_LEN, RECORD_LEN,
 };
 
-/// Bytes streamed per read while mining: a whole number of 50-byte records
-/// (~800 KiB) so record parsing never straddles a chunk boundary. This is
-/// the mining pass's ENTIRE per-file memory footprint no matter how large
-/// the file — a 4 GiB display bust streams through the same buffer as a
-/// 4 MB mini. (There is deliberately no file-size cap: a size cutoff would
-/// make big files silently vanish from the geometry report, which reads as
-/// "file missing" in the drawer. The only bounded-by-triangle-count cost is
-/// stl_facts' edge map, which caps itself.)
+// A whole number of records per chunk so parsing never straddles a read;
+// this buffer is the entire per-file footprint. No size cap on purpose: a
+// cutoff would make big files silently show no geometry at all.
 const STREAM_CHUNK_BYTES: usize = RECORD_LEN * 16 * 1024;
 
-/// Fraction of total system RAM set aside as the edge map's transient
-/// budget. Deliberately conservative (an eighth, not a half): mining runs
-/// as a background catalog job while the user's slicer, browser, and the
-/// app itself are all still open, and this pass must never be the reason
-/// the OS starts swapping.
+// An eighth, not more: mining runs alongside the user's slicer and
+// browser, and must never be why the OS starts swapping.
 const EDGE_MAP_RAM_FRACTION: u64 = 8;
 
-/// Worst-case bytes charged per triangle when sizing the edge-map cap to
-/// available RAM: ~3 unique edges per triangle, ~34 bytes per
-/// `HashMap<EdgeKey, u32>` entry (2 x 12-byte VertexKey-ish coordinate
-/// tuples plus hashbrown control-byte/bucket overhead), times ~1.5x
-/// headroom for the map's own growth/load-factor doubling. A clean
-/// manifold mesh (every edge shared by exactly two triangles, so the
-/// entry count and the triangle count are close) uses roughly half this in
-/// practice, but the recommendation sizes against the worst case on
-/// purpose: an open/leaky mesh — the exact thing this signal exists to
-/// catch — is also the shape most likely to hit it.
+// ~3 unique edges/triangle x ~34 B/map entry x ~1.5 growth headroom.
+// Sized to the worst case (fully open mesh) on purpose — leaky meshes are
+// exactly what this signal exists to catch.
 const BYTES_PER_TRIANGLE_WORST_CASE: u64 = 150;
 
-/// Ceiling `recommended_edge_cap` will ever suggest, no matter how much RAM
-/// the machine reports: 30,000,000 triangles * 150 bytes/triangle ~= 4.5 GB
-/// of transient memory — about the most a single background mining pass
-/// should ever ask of any machine, workstation or not.
+// 30M tris x 150 B ~= 4.5 GB transient — the most a background pass
+// should ask of any machine, however large.
 const RECOMMENDED_EDGE_CAP_CEILING: u32 = 30_000_000;
 
-/// Pure formula behind `recommended_edge_cap`, split out so it's testable
-/// without mocking sysinfo. `total_ram_bytes` is the machine's total
-/// (not free/available) RAM, since the edge map competes with everything
-/// else running, not just the currently-free portion.
-///
-/// `total_ram / EDGE_MAP_RAM_FRACTION / BYTES_PER_TRIANGLE_WORST_CASE`,
-/// clamped to `[EDGE_STATS_MAX_TRIS, RECOMMENDED_EDGE_CAP_CEILING]`:
-///   - floor: nobody's setting regresses mining below what today's build
-///     already handles by default, even on a machine sysinfo can't read;
-///   - ceiling: ~4.5 GB transient is the most this pass should ever ask of
-///     any machine — a 128 GB render box gets the same cap as a 64 GB one.
-///
-/// Worked examples: 8 GB -> ~7M tris, 16 GB -> ~14M tris, 64 GB+ -> 30M
-/// (the ceiling, reached well before 64 GB).
+/// Total (not free) RAM: the edge map competes with everything running.
+/// Split from the sysinfo caller so the formula tests without mocking.
 fn recommended_edge_cap_for(total_ram_bytes: u64) -> u32 {
     if total_ram_bytes == 0 {
         // sysinfo reported nothing usable — fall back to the safe floor
@@ -96,11 +51,6 @@ fn recommended_edge_cap_for(total_ram_bytes: u64) -> u32 {
     ) as u32
 }
 
-/// The edge-map triangle cap this machine can afford, derived from its
-/// total RAM (see `recommended_edge_cap_for` for the formula and clamp
-/// rationale). This is what settings::edge_stats_max_tris seeds to on
-/// first load, and what the frontend's "Auto" control restores without
-/// requiring a save first (see commands::get_recommended_edge_cap).
 pub fn recommended_edge_cap() -> u32 {
     let sys = System::new_with_specifics(
         RefreshKind::nothing().with_memory(MemoryRefreshKind::nothing().with_ram()),
@@ -108,31 +58,18 @@ pub fn recommended_edge_cap() -> u32 {
     recommended_edge_cap_for(sys.total_memory())
 }
 
-/// Tally of one mine_geometry pass, reported in GeometryStatus::Completed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GeometryOutcome {
-    /// Newly parsed and stored this run.
     pub mined: u32,
-    /// Skipped without a disk read: this content hash already had a
-    /// file_geometry row (from an earlier mining run, possibly under a
-    /// different path/name).
+    /// Skipped without a disk read: the hash already has a complete row.
     pub already_known: u32,
-    /// Unreadable (missing file, permission error) or unparsable (not a
-    /// well-formed binary STL) — one bad file never aborts the run.
+    /// Unreadable or not a well-formed binary STL; the run continues.
     pub failed: u32,
 }
 
-/// One candidate, streamed once: every byte goes through the blake3 hasher,
-/// and — when the byte length matches the header's declared triangle count —
-/// through a FactsAccumulator in the same pass.
-///
-/// Outer Err (io): the file couldn't be read completely, or its size changed
-/// mid-read (bytes hashed != size at open) — no hash is trustworthy, the
-/// caller stores nothing. Inner Err: the bytes are fine (hash valid, worth
-/// storing for dup detection) but they aren't a well-formed binary STL.
-///
-/// `edge_cap` is the settings-derived (or test-supplied) triangle ceiling
-/// for the edge-adjacency map — see FactsAccumulator::with_cap.
+/// Outer Err: the read failed or the size changed mid-read — no hash is
+/// trustworthy, store nothing. Inner Err: the bytes hashed fine but are
+/// not a well-formed binary STL.
 fn stream_mine(path: &str, edge_cap: u32) -> std::io::Result<(String, Result<StlFacts, String>)> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
@@ -213,35 +150,9 @@ fn stream_mine(path: &str, edge_cap: u32) -> std::io::Result<(String, Result<Stl
     Ok((hash, acc.map(FactsAccumulator::finish).ok_or(parse_err)))
 }
 
-/// Mine bbox/volume/open-edge facts for every loose (unpacked) STL the
-/// catalog's `files` table knows about.
-///
-/// For each candidate:
-///   - if its files row already carries a content_hash AND file_geometry
-///     already has that hash, it's `already_known` — no disk access at all;
-///   - otherwise the file is STREAMED once through a fixed ~800 KiB buffer
-///     (see stream_mine — no size limit, no whole-file allocation), hashing
-///     and fact-accumulating in the same pass. A files row that lacked a
-///     content_hash gets one stored via `db::store_hash` as a side effect —
-///     free duplicate-detection fodder, since a later dup scan then skips a
-///     disk read for this path entirely;
-///   - if that hash turns out to already be known (a duplicate of a file
-///     mined earlier this same run, or one whose files row hadn't recorded
-///     the hash yet), it's `already_known` too;
-///   - a parse failure counts as `failed` and mining continues — the point
-///     of a mining pass is to harvest what it can, not to guarantee every
-///     file succeeds.
-///
-/// A hash whose stored row already satisfies `edge_cap` (see
-/// db::geometry_satisfies) is `already_known` and never re-streamed; a hash
-/// stored under a smaller cap — `open_edges IS NULL` and its `tri_count`
-/// now fits `edge_cap` — is re-streamed and its row replaced, so raising
-/// the setting and re-running actually backfills the models it unblocks.
-///
-/// `cancel` is checked once per candidate, matching find_duplicates; on
-/// cancellation the same `AppError::UserCancelled` variant is returned so
-/// callers (see commands::start_geometry_scan) route it to Cancelled instead
-/// of Failed exactly like every other catalog job.
+/// Streams every un-mined loose STL once, hashing and accumulating facts
+/// in one pass; hashes land in files.content_hash as a side effect. A row
+/// stored under a smaller cap re-streams when `edge_cap` now covers it.
 pub fn mine_geometry(
     conn: &Connection,
     cancel: &AtomicBool,

@@ -777,9 +777,6 @@
           </details>
         </div>
 
-        <!-- Mined geometry (issue #15) — only appears once a geometry scan
-             has mined this model's files; empty state stays invisible
-             rather than showing a section with nothing in it. -->
         <div v-if="modelGeometry.length">
           <div
             class="font-mono font-semibold text-[9.5px] tracking-[0.12em] text-base-content/40 mb-1.5"

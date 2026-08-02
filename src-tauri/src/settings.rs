@@ -63,11 +63,8 @@ pub fn default_magnet_inventory() -> Vec<MagnetSpec> {
     .collect()
 }
 
-/// Resolves the store's raw edge_stats_max_tris reading into the value
-/// get_settings should actually hand back: an absent key seeds the
-/// machine-derived recommendation, a present-but-low key is clamped up to
-/// the compile-time floor. Split out from get_settings so this decision is
-/// unit-testable without a live tauri Store/AppHandle.
+/// Absent seeds the machine recommendation; present clamps to the floor.
+/// Split from get_settings so it tests without a live Store/AppHandle.
 fn resolve_edge_stats_max_tris(stored: Option<u64>) -> u32 {
     match stored {
         Some(v) => (v as u32).max(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS),

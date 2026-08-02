@@ -209,18 +209,14 @@ fn init_schema(conn: &Connection) -> Result<(), AppError> {
             designer TEXT PRIMARY KEY COLLATE NOCASE
         );
 
-        -- Mined-once-per-content geometry facts (issue #15 backend mining
-        -- stage), keyed by the BARE blake3 hex of the file's bytes — the dup
-        -- scanner's format (see pack::bare_hash and files.content_hash
-        -- above), so a file that's been mined once is never re-parsed even
-        -- if it later shows up again under a different path or name.
+        -- Keyed by BARE blake3 hex (the dup scanner's format), so bytes
+        -- mined once are never re-parsed under another path or name.
         CREATE TABLE IF NOT EXISTS file_geometry (
             content_hash TEXT PRIMARY KEY,
             tri_count    INTEGER NOT NULL,
             x_mm REAL NOT NULL, y_mm REAL NOT NULL, z_mm REAL NOT NULL,
             volume_mm3   REAL NOT NULL,
-            -- NULL = edge stats skipped above stl_facts::EDGE_STATS_MAX_TRIS
-            -- (mirrors StlFacts.open_edge_count exactly), not "unknown".
+            -- NULL = edge stats skipped over the cap, not "unknown".
             open_edges   INTEGER,
             derived_at   INTEGER NOT NULL
         );
@@ -2244,17 +2240,9 @@ pub fn stl_geometry_candidates(
     Ok(rows)
 }
 
-/// Whether `content_hash` (bare blake3 hex) already has a file_geometry row
-/// that `edge_cap` can't improve on — checked before any disk read so a
-/// duplicate's second (or hundredth) occurrence never re-parses its bytes,
-/// AND so raising the edge-stats cap and re-running actually backfills the
-/// rows it unblocks instead of skipping them forever.
-///
-/// True iff a row exists AND (its open_edges is already populated — mining
-/// under any cap can't improve on a complete row — OR its tri_count still
-/// exceeds `edge_cap`, meaning re-mining under this cap would just produce
-/// the same NULL again). False (re-mine) only for a stored row with
-/// `open_edges IS NULL` whose `tri_count` now fits under a raised cap.
+/// False (re-mine) only for a row whose open_edges is NULL while its
+/// tri_count now fits under `edge_cap` — raising the cap backfills
+/// instead of skipping forever.
 pub fn geometry_satisfies(
     conn: &Connection,
     content_hash: &str,
@@ -2271,10 +2259,7 @@ pub fn geometry_satisfies(
     Ok(count > 0)
 }
 
-/// Upsert one content hash's mined facts. x_mm/y_mm/z_mm are the STL's
-/// bounding-box dimensions (max − min per axis), not the raw min/max —
-/// the natural "measured size" number, matching the models.dims_mm
-/// convention elsewhere in this file.
+/// Stores bbox extents (max − min per axis), not the raw min/max.
 pub fn store_file_geometry(
     conn: &Connection,
     content_hash: &str,
@@ -2309,13 +2294,7 @@ pub fn store_file_geometry(
     Ok(())
 }
 
-/// A model dir's mined per-file geometry, joined from file_geometry via
-/// each file's content_hash — files with no hash yet, or a hash mining
-/// hasn't reached, simply don't appear (an inner join, not a left join:
-/// there is nothing useful to show for a file with no facts). Mirrors
-/// model_files' dir-matching semantics exactly (`f.dir_path = ?1`, the
-/// whole-folder case — no variant/pose narrowing, since geometry is a fact
-/// about the file, not about which pose bucket it's filed under).
+/// Inner join on content_hash: un-mined files simply don't appear.
 pub fn model_geometry(conn: &Connection, dir_path: &str) -> Result<Vec<ModelFileGeometry>, AppError> {
     let map_err =
         |e: rusqlite::Error| AppError::ConfigError(format!("Geometry listing failed: {}", e));

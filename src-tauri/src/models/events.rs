@@ -131,9 +131,6 @@ pub struct DuplicateCancelledStatus {
     pub job_id: String,
 }
 
-/// Backend mining stage progress (issue #15) — shaped exactly like
-/// DuplicateStatus, since mine_geometry walks the index the same way
-/// find_duplicates does (see catalog::geometry's module doc).
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub enum GeometryStatus {
     Started(GeometryStartedStatus),

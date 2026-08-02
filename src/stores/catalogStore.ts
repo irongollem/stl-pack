@@ -230,8 +230,6 @@ export const useCatalogStore = defineStore("catalog", () => {
   const activeVariant = ref("");
   const selected = ref<CatalogEntry | null>(null);
   const files = ref<CatalogFile[]>([]);
-  // Mined per-file geometry (issue #15) for the selected member's dir_path —
-  // empty until a geometry scan has mined that folder's files.
   const modelGeometry = ref<ModelFileGeometry[]>([]);
   const newTag = ref("");
   const dupGroups = ref<DuplicateGroup[]>([]);

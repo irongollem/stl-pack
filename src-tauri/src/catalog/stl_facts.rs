@@ -1,22 +1,5 @@
-//! A richer binary-STL reader for catalog metadata mining (issue #15):
-//! bbox, enclosed volume, and a manifoldness signal (open edge count), all
-//! from ONE pass over the triangle records. `basecutter::stl_bbox` is a
-//! deliberately narrow bbox-only reader for scatter-library assets (six
-//! numbers, cheap, no mesh-quality signal); this module exists because the
-//! catalog wants to surface more about a model file than its footprint —
-//! print volume for cost/weight estimates, and whether a mesh is a clean
-//! closed solid or a leaky/open one — without paying for a second parse of
-//! the same bytes or spawning Blender just to ask those questions.
-//!
-//! Binary STL layout (identical to stl_bbox.rs, repeated here since this
-//! file is meant to be readable on its own): an 80-byte header (ignored), a
-//! little-endian u32 triangle count, then that many 50-byte records (12
-//! bytes normal + 3x12 bytes vertex + 2 bytes attribute byte count, all
-//! little-endian f32/u16). ASCII STL is rejected for the same reason
-//! stl_bbox rejects it: it has no fixed record size to validate the byte
-//! length against, and every STL this app itself exports is binary — an
-//! ASCII file showing up in a catalog folder is already an out-of-band
-//! asset this pass doesn't attempt to support.
+//! Geometry facts from binary STL triangle records, accumulated
+//! incrementally so the miner can stream instead of buffering whole files.
 
 use std::collections::HashMap;
 
@@ -26,46 +9,27 @@ pub struct StlFacts {
     pub tri_count: u32,
     pub min: (f32, f32, f32),
     pub max: (f32, f32, f32),
-    /// Enclosed mesh volume in mm^3 (abs of the signed tetrahedron sum,
-    /// accumulated in f64). ~0 for degenerate open sheets.
+    /// abs of the signed tetrahedron sum; ~0 for open sheets.
     pub volume_mm3: f64,
-    /// Number of edges NOT shared by exactly two triangles (0 for a clean
-    /// closed manifold). None when tri_count exceeds the caller's edge-map
-    /// cap (see FactsAccumulator::with_cap) — the edge map is skipped to
-    /// bound memory on huge scenery meshes.
+    /// Edges not shared by exactly two triangles; None above the edge cap.
     pub open_edge_count: Option<u32>,
 }
 
-/// Conservative fallback triangle cap for the edge-adjacency map: passed to
-/// `FactsAccumulator::with_cap` by callers with no runtime cap available
-/// (tests, the test-only whole-slice wrapper below), and the floor every
-/// runtime cap is clamped to (see
-/// catalog::geometry::recommended_edge_cap and settings::edge_stats_max_tris)
-/// — no user setting, however small, is allowed to regress mining below
-/// what today's build already handles by default. Above this many
-/// triangles with no larger cap in effect, the edge map is skipped
-/// (returning `open_edge_count: None`) rather than grown unbounded — a
-/// hostile or just enormous scenery STL shouldn't be able to force a
-/// multi-GB HashMap during a routine catalog scan. bbox and volume, which
-/// need no map, still run regardless of the cap.
+// The floor every runtime edge cap clamps to: no setting may regress
+// mining below what an uncapped build handled, and no mesh may force an
+// unbounded edge map (~150 B/triangle worst case).
 pub const EDGE_STATS_MAX_TRIS: u32 = 1_500_000;
 
 pub(crate) const HEADER_LEN: usize = 80;
 pub(crate) const COUNT_LEN: usize = 4;
 pub(crate) const RECORD_LEN: usize = 50; // 12 (normal) + 3*12 (verts) + 2 (attr byte count)
 
-/// A vertex keyed by the exact raw bit pattern of its three f32 coordinates
-/// (not the float values themselves) — two vertices are "the same" iff all
-/// three coordinate bytes match exactly. This sidesteps float-equality
-/// pitfalls (NaN never equals itself, -0.0 vs 0.0 bit-differ) that would
-/// otherwise make a HashMap key derived from f32 either panic-prone (Eq/Hash
-/// on floats) or silently split/merge vertices a naive `==` wouldn't.
+// Keyed on the raw f32 bits, not the values: NaN != NaN and -0.0/0.0
+// differ, so a naive == would split or merge vertices.
 type VertexKey = (u32, u32, u32);
 
-/// An undirected edge, canonicalized so (a, b) and (b, a) hash identically —
-/// required since a shared edge is walked in opposite directions by its two
-/// adjacent (consistently wound) triangles, and winding direction must NOT
-/// affect the open-edge count.
+// Canonicalized (min, max) so the two adjacent triangles walking a shared
+// edge in opposite directions count the same edge.
 type EdgeKey = (VertexKey, VertexKey);
 
 fn edge_key(a: VertexKey, b: VertexKey) -> EdgeKey {
@@ -76,11 +40,6 @@ fn edge_key(a: VertexKey, b: VertexKey) -> EdgeKey {
     }
 }
 
-/// Incremental accumulator over 50-byte triangle records, so a caller can
-/// stream a multi-GB STL through a fixed buffer instead of holding the
-/// whole file in memory (catalog mining does exactly that — see
-/// catalog::geometry). `parse_binary_stl_facts` is the convenience wrapper
-/// for callers (and tests) that do have the full byte slice.
 pub struct FactsAccumulator {
     tri_count: u32,
     min: [f32; 3],
@@ -92,15 +51,8 @@ pub struct FactsAccumulator {
 }
 
 impl FactsAccumulator {
-    /// `tri_count` is the header's declared triangle count — the caller is
-    /// responsible for validating the file's byte length against it (the
-    /// wrapper below does; the streaming miner checks the stat size) and
-    /// for pushing exactly that many records. `edge_cap` is the
-    /// edge-adjacency map's triangle ceiling: the miner passes the
-    /// settings-derived value (settings::edge_stats_max_tris, via
-    /// catalog::geometry::recommended_edge_cap), and EDGE_STATS_MAX_TRIS is
-    /// the fallback for callers with no such setting (tests, the test-only
-    /// whole-slice wrapper below).
+    /// The caller validates byte length against `tri_count` and pushes
+    /// exactly that many records; `edge_cap` gates the edge map only.
     pub(crate) fn with_cap(tri_count: u32, edge_cap: u32) -> Result<Self, String> {
         if tri_count == 0 {
             return Err("binary STL header reports zero triangles".to_string());
@@ -114,8 +66,6 @@ impl FactsAccumulator {
         })
     }
 
-    /// Fold one 50-byte triangle record (normal + 3 vertices + attribute
-    /// count) into the running facts.
     pub fn push_record(&mut self, record: &[u8; RECORD_LEN]) {
         let mut offset = 12; // skip the facet normal
 
@@ -153,12 +103,8 @@ impl FactsAccumulator {
         self.volume_acc += dot / 6.0;
 
         if let Some(counts) = self.edge_counts.as_mut() {
-            // A degenerate triangle (a repeated vertex) still yields three
-            // well-defined edge keys — some just come out equal to each
-            // other — so this can't panic or under/overcount; it merely
-            // makes an already-degenerate triangle count as more open edges,
-            // which is the honest answer for a triangle a real mesh
-            // wouldn't contain anyway.
+            // A degenerate triangle's repeated vertex yields duplicate edge
+            // keys; it counts as extra open edges, which is honest.
             for &(a, b) in &[
                 (verts_key[0], verts_key[1]),
                 (verts_key[1], verts_key[2]),
@@ -183,9 +129,6 @@ impl FactsAccumulator {
     }
 }
 
-/// Parse a binary STL's declared triangle count out of its 84-byte
-/// header+count preamble. Shared by the whole-slice wrapper below and the
-/// streaming miner, so the two can never disagree on the header format.
 pub(crate) fn parse_header(preamble: &[u8]) -> Result<u32, String> {
     if preamble.len() < HEADER_LEN + COUNT_LEN {
         return Err(format!(
@@ -199,27 +142,15 @@ pub(crate) fn parse_header(preamble: &[u8]) -> Result<u32, String> {
     Ok(u32::from_le_bytes(count_bytes))
 }
 
-/// Parse a binary STL's header + triangle records into bbox/volume/edge
-/// facts. Pure function of the bytes, kept test-only since production
-/// mining streams through FactsAccumulator instead of buffering whole
-/// files — this wrapper is how the accumulator's math gets exercised
-/// against hand-built byte arrays (no fixture file needed).
-///
-/// Rejects (with a human-readable reason, not a panic):
-///   - anything shorter than the 84-byte header+count
-///   - a byte length that doesn't match `84 + triangle_count * 50` exactly
-///     (covers both a truncated/corrupt file and an ASCII STL, which has no
-///     reason to land on this exact formula)
-///   - a triangle count of zero (an STL with no geometry has no facts)
+/// Test-only whole-slice wrapper: production mining streams through
+/// FactsAccumulator; this is how tests exercise the same math.
 #[cfg(test)]
 pub fn parse_binary_stl_facts(bytes: &[u8]) -> Result<StlFacts, String> {
     parse_binary_stl_facts_with_cap(bytes, EDGE_STATS_MAX_TRIS)
 }
 
-/// Same as `parse_binary_stl_facts`, but with the edge-map triangle cap
-/// passed in explicitly rather than fixed to `EDGE_STATS_MAX_TRIS`. Split
-/// out purely so tests can exercise the cap boundary with a tiny value
-/// instead of building a multi-million-triangle STL.
+// Cap passed explicitly so tests hit the boundary with a tiny value
+// instead of a multi-million-triangle fixture.
 #[cfg(test)]
 fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFacts, String> {
     let tri_count = parse_header(bytes)?;

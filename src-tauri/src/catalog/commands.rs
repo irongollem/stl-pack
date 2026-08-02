@@ -474,11 +474,8 @@ pub async fn start_duplicate_scan(app_handle: AppHandle) -> Result<String, AppEr
     Ok(job_id)
 }
 
-/// Backend mining stage of issue #15: parse every loose STL the catalog
-/// knows about for bbox/volume/open-edge facts, one row per distinct
-/// content hash. Mirrors start_duplicate_scan's shape exactly — same job
-/// registry, same "pack:" exclusion (a pack job deletes the loose bytes
-/// mining is busy reading), same throttled progress stream.
+/// Runs as a catalog job; excluded while a pack job could be deleting
+/// the loose bytes mining reads.
 #[tauri::command]
 #[specta::specta]
 pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppError> {
@@ -561,12 +558,7 @@ pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppErr
     Ok(job_id)
 }
 
-/// The edge-stats triangle cap this machine's RAM would suggest, for the
-/// settings UI's "Auto" control to show/restore without first saving a
-/// value — settings::get_settings seeds edge_stats_max_tris to the same
-/// number on first load, but a user who already has a stored value needs a
-/// way to see (and revert to) what "Auto" would pick without overwriting
-/// their setting first.
+/// What "Auto" would pick, without overwriting the stored setting.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_recommended_edge_cap() -> Result<u32, AppError> {
@@ -1289,9 +1281,6 @@ pub async fn get_catalog_model_files(
     .map_err(|e| AppError::ConfigError(format!("File task failed: {}", e)))?
 }
 
-/// A model dir's mined per-file geometry (issue #15) — only files whose
-/// content hash has been mined show up; run start_geometry_scan first to
-/// populate file_geometry.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_model_geometry(

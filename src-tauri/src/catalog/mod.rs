@@ -359,12 +359,7 @@ pub struct DuplicateGroup {
     pub packed_paths: Vec<String>,
 }
 
-/// One file's mined geometry facts (issue #15 backend mining stage),
-/// joined from file_geometry via the file's content_hash — a duplicate file
-/// (any path, same bytes) shows the same facts without ever being re-parsed.
-/// x_mm/y_mm/z_mm are the STL's bounding-box dimensions (max − min per
-/// axis); open_edges is None when the mesh exceeded
-/// stl_facts::EDGE_STATS_MAX_TRIS and edge stats were skipped, not "clean".
+/// x/y/z are bbox extents; open_edges None means skipped, not clean.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct ModelFileGeometry {
     pub file_name: String,
