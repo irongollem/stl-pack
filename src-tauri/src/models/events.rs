@@ -132,6 +132,46 @@ pub struct DuplicateCancelledStatus {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
+pub enum GeometryStatus {
+    Started(GeometryStartedStatus),
+    Progress(GeometryProgressStatus),
+    Completed(GeometryCompletedStatus),
+    Failed(GeometryFailedStatus),
+    Cancelled(GeometryCancelledStatus),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryStartedStatus {
+    pub job_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryProgressStatus {
+    pub job_id: String,
+    pub processed: u32,
+    pub total: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryCompletedStatus {
+    pub job_id: String,
+    pub mined: u32,
+    pub already_known: u32,
+    pub failed: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryFailedStatus {
+    pub job_id: String,
+    pub error: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type)]
+pub struct GeometryCancelledStatus {
+    pub job_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub enum PackStatus {
     Started(PackStartedStatus),
     Progress(PackProgressStatus),

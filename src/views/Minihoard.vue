@@ -223,7 +223,7 @@ const sourceFilter = ref("");
 const notDownloadedOnly = ref(false);
 
 const distinctSorted = (values: Iterable<string>) =>
-  [...new Set(values)].sort((a, b) => a.localeCompare(b));
+  [...new Set(values)].toSorted((a, b) => a.localeCompare(b));
 
 const creators = computed(() =>
   distinctSorted(
@@ -243,7 +243,7 @@ const months = computed(() => {
     if (m) set.add(m);
     else hasUndated = true;
   }
-  return { sorted: [...set].sort().reverse(), hasUndated };
+  return { sorted: [...set].toSorted().toReversed(), hasUndated };
 });
 
 /** "YYYYMM" -> "YYYY-MM". */

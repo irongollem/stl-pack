@@ -375,6 +375,29 @@ async startDuplicateScan() : Promise<Result<string, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Runs as a catalog job; excluded while a pack job could be deleting
+ * the loose bytes mining reads.
+ */
+async startGeometryScan() : Promise<Result<string, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("start_geometry_scan") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * What "Auto" would pick, without overwriting the stored setting.
+ */
+async getRecommendedEdgeCap() : Promise<Result<number, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_recommended_edge_cap") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async cancelCatalogJob(jobId: string) : Promise<Result<null, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cancel_catalog_job", { jobId }) };
@@ -438,6 +461,14 @@ async removeGroupTag(groupName: string, tag: string) : Promise<Result<null, AppE
 async getCatalogModelFiles(dirPath: string, variantKey: string | null) : Promise<Result<CatalogFile[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_catalog_model_files", { dirPath, variantKey }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getModelGeometry(dirPath: string) : Promise<Result<ModelFileGeometry[], AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_model_geometry", { dirPath }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1154,6 +1185,7 @@ batchRenderStatus: BatchRenderStatus,
 blenderProvisionStatus: BlenderProvisionStatus,
 compressionStatus: CompressionStatus,
 duplicateStatus: DuplicateStatus,
+geometryStatus: GeometryStatus,
 landscapeGenStatus: LandscapeGenStatus,
 minihoardDownloadStatus: MinihoardDownloadStatus,
 minihoardStatus: MinihoardStatus,
@@ -1167,6 +1199,7 @@ batchRenderStatus: "batch-render-status",
 blenderProvisionStatus: "blender-provision-status",
 compressionStatus: "compression-status",
 duplicateStatus: "duplicate-status",
+geometryStatus: "geometry-status",
 landscapeGenStatus: "landscape-gen-status",
 minihoardDownloadStatus: "minihoard-download-status",
 minihoardStatus: "minihoard-status",
@@ -1215,7 +1248,7 @@ magnet_ignored: boolean | null;
  * Slice-mode scatter shells omitted because they could not be clipped
  * into a closed, rim-bounded solid.
  */
-scatter_skipped: number | null;
+scatter_skipped: number | null; 
 /**
  * VTT GLB export design doc "Base cut": the cut's `.glb` twin path,
  * glb-mode jobs only (`BaseCutJob.glb == true`) — `None` in the
@@ -1638,6 +1671,12 @@ export type GeneratedPieceKind = "pebble" | "rock" | "twig" | "grass" | "mushroo
  * style is a new row here, not a new pipeline).
  */
 export type GeneratorPreset = { id: string; label: string; params: LandscapeParams }
+export type GeometryCancelledStatus = { job_id: string }
+export type GeometryCompletedStatus = { job_id: string; mined: number; already_known: number; failed: number }
+export type GeometryFailedStatus = { job_id: string; error: string }
+export type GeometryProgressStatus = { job_id: string; processed: number; total: number }
+export type GeometryStartedStatus = { job_id: string }
+export type GeometryStatus = { Started: GeometryStartedStatus } | { Progress: GeometryProgressStatus } | { Completed: GeometryCompletedStatus } | { Failed: GeometryFailedStatus } | { Cancelled: GeometryCancelledStatus }
 /**
  * Emissive glow spec for `MaterialPalette.glow` — lava-only today (the
  * crust needs a stones layer to key `glow_w` off of, see
@@ -1874,6 +1913,10 @@ thumbnail_url: string | null;
  */
 image_url: string | null }
 export type MinihoardStatus = { Line: MinihoardLine } | { Finished: MinihoardFinished }
+/**
+ * x/y/z are bbox extents; open_edges None means skipped, not clean.
+ */
+export type ModelFileGeometry = { file_name: string; tri_count: number; x_mm: number; y_mm: number; z_mm: number; volume_mm3: number; open_edges: number | null }
 export type ModelLocation = { Local: string } | { External: string }
 /**
  * The user-editable metadata for one model, saved together from the drawer.
@@ -2356,7 +2399,16 @@ magnet_inventory?: MagnetSpec[] | null;
  * piece picker only offers generated + bundled sources.
  * serde(default): an older store has no such key.
  */
-scatter_library_dir?: string | null }
+scatter_library_dir?: string | null; 
+/**
+ * Triangle-count ceiling above which geometry mining skips the
+ * open-edge HashMap (see catalog::stl_facts::EDGE_STATS_MAX_TRIS and
+ * catalog::geometry::recommended_edge_cap). Seeded from the machine's
+ * RAM on first load; never below EDGE_STATS_MAX_TRIS — a stored value
+ * under that floor is clamped up on read. serde(default): an older
+ * store has no such key.
+ */
+edge_stats_max_tris?: number | null }
 export type StartedStatus = { job_id: string; total_files: number; total_size_kb: number }
 /**
  * A model as the release builder stages it and `model.json` records it.

@@ -671,7 +671,8 @@ mod tests {
         )
         .unwrap();
         let plan =
-            crate::catalog::normalize::plan(&conn, &[library.clone()], None, None, None).unwrap();
+            crate::catalog::normalize::plan(&conn, std::slice::from_ref(&library), None, None, None)
+                .unwrap();
         assert!(plan.skipped.is_empty(), "{:?}", plan.skipped);
         assert_eq!(
             plan.total_ops,

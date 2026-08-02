@@ -1,11 +1,13 @@
 pub mod commands;
 pub mod db;
 pub mod dups;
+pub mod geometry;
 pub mod layout;
 pub mod normalize;
 pub mod pack;
 pub mod scanner;
 pub mod sidecar;
+pub mod stl_facts;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -355,6 +357,18 @@ pub struct DuplicateGroup {
     /// deleted until the model is unpacked; the UI greys them with a hint.
     #[serde(default)]
     pub packed_paths: Vec<String>,
+}
+
+/// x/y/z are bbox extents; open_edges None means skipped, not clean.
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct ModelFileGeometry {
+    pub file_name: String,
+    pub tri_count: u32,
+    pub x_mm: f64,
+    pub y_mm: f64,
+    pub z_mm: f64,
+    pub volume_mm3: f64,
+    pub open_edges: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]

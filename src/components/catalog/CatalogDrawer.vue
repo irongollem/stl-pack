@@ -260,7 +260,7 @@
         <div class="border-l-2 border-base-content/10 pl-2 min-w-0">
           <div class="flex items-center gap-1.5 min-w-0">
             <span
-              class="font-mono font-semibold text-[9px] tracking-[0.1em] text-base-content/30 shrink-0"
+              class="font-mono font-semibold text-[9px] tracking-widest text-base-content/30 shrink-0"
             >
               SELECTED BUILD
             </span>
@@ -777,6 +777,51 @@
           </details>
         </div>
 
+        <div v-if="modelGeometry.length">
+          <div
+            class="font-mono font-semibold text-[9.5px] tracking-[0.12em] text-base-content/40 mb-1.5"
+          >
+            GEOMETRY
+          </div>
+          <div class="font-mono text-[10.5px] text-base-content/60 mb-1.5">
+            {{ geometryTallestMm.toFixed(1) }} mm tall ·
+            {{ geometryTotalVolumeMl.toFixed(1) }} ml ·
+            {{ geometryTotalTriCount.toLocaleString() }} tris
+          </div>
+          <div
+            v-for="g in modelGeometry"
+            :key="g.file_name"
+            class="flex items-center gap-2 font-mono text-[11px] text-base-content/60 py-0.5"
+          >
+            <span class="truncate flex-1" :title="g.file_name">{{
+              g.file_name
+            }}</span>
+            <span
+              v-if="g.open_edges !== null && g.open_edges > 0"
+              class="shrink-0 text-warning"
+              :title="`${g.open_edges} open edges — mesh may not be watertight`"
+            >
+              ⚠
+            </span>
+            <span
+              v-else-if="g.open_edges === null"
+              class="shrink-0 opacity-40"
+              title="watertightness not checked — this mesh was over the triangle limit when mined; raise the limit in Settings and mine again to backfill"
+            >
+              ○
+            </span>
+            <span class="opacity-70 shrink-0">
+              {{ g.x_mm.toFixed(1) }}×{{ g.y_mm.toFixed(1) }}×{{
+                g.z_mm.toFixed(1)
+              }}
+              mm
+            </span>
+            <span class="opacity-60 shrink-0"
+              >{{ g.tri_count.toLocaleString() }} tris</span
+            >
+          </div>
+        </div>
+
         <div>
           <div
             class="flex items-center gap-2 font-mono font-semibold text-[9.5px] tracking-[0.12em] text-base-content/40 mb-1.5"
@@ -921,6 +966,10 @@ const {
   groupSources,
   displayPath,
   measuredLabel,
+  modelGeometry,
+  geometryTallestMm,
+  geometryTotalVolumeMl,
+  geometryTotalTriCount,
   supportTabs,
   activeSupport,
   variantsInTab,

@@ -28,6 +28,7 @@ pub(crate) static SETTINGS_CACHE: Lazy<Mutex<Settings>> = Lazy::new(|| {
         licence_path: None,
         magnet_inventory: None,
         scatter_library_dir: None,
+        edge_stats_max_tris: None,
     })
 });
 
@@ -60,6 +61,15 @@ pub fn default_magnet_inventory() -> Vec<MagnetSpec> {
         count: 1,
     })
     .collect()
+}
+
+/// Split out of get_settings so the decision is unit-testable without a
+/// live tauri Store and AppHandle.
+fn resolve_edge_stats_max_tris(stored: Option<u64>) -> u32 {
+    match stored {
+        Some(v) => (v as u32).max(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS),
+        None => crate::catalog::geometry::recommended_edge_cap(),
+    }
 }
 
 async fn get_store_arc(app_handle: &AppHandle) -> Result<Arc<Store<Wry>>, String> {
@@ -177,6 +187,15 @@ pub async fn get_settings(app_handle: AppHandle) -> Result<Settings, String> {
         .get("scatter_library_dir")
         .and_then(|v| v.as_str().map(String::from));
 
+    // A read that writes: seeding and clamping are both persisted, so the
+    // store converges on a valid value instead of being re-fixed every load.
+    let stored_edge_cap = store.get("edge_stats_max_tris").and_then(|v| v.as_u64());
+    let edge_stats_max_tris = resolve_edge_stats_max_tris(stored_edge_cap);
+    if stored_edge_cap != Some(u64::from(edge_stats_max_tris)) {
+        store.set("edge_stats_max_tris", json!(edge_stats_max_tris));
+        store.save().ok();
+    }
+
     // Seed the lexicon on first load so the UI has something to show and the
     // scanner has something to match; the user's saved list wins thereafter.
     let known_designers = store
@@ -220,6 +239,7 @@ pub async fn get_settings(app_handle: AppHandle) -> Result<Settings, String> {
         licence_path,
         magnet_inventory: Some(magnet_inventory),
         scatter_library_dir,
+        edge_stats_max_tris: Some(edge_stats_max_tris),
     };
 
     {
@@ -349,6 +369,15 @@ pub async fn set_settings(app_handle: AppHandle, settings: Settings) -> Result<(
         "scatter_library_dir",
         settings.scatter_library_dir.as_deref().map(|v| json!(v)),
     );
+    // Clamped on write too, not just on read — EDGE_STATS_MAX_TRIS is a
+    // floor the store can never sit below, whichever path put a value there.
+    set_or_delete(
+        &store,
+        "edge_stats_max_tris",
+        settings
+            .edge_stats_max_tris
+            .map(|v| json!(v.max(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS))),
+    );
     store.save().map_err(|e| e.to_string())?;
 
     // Update the cache only after the store persisted, so memory and disk
@@ -423,5 +452,29 @@ mod tests {
         assert_eq!(restored[0].diameter_mm, 6.0);
         assert_eq!(restored[0].height_mm, 2.0);
         assert_eq!(restored[0].count, 1);
+    }
+
+    /// Comparing against a live recommended_edge_cap() is safe: it is
+    /// deterministic within one test run (same process, same RAM).
+    #[test]
+    fn resolve_edge_stats_max_tris_seeds_the_recommendation_when_absent() {
+        assert_eq!(
+            resolve_edge_stats_max_tris(None),
+            crate::catalog::geometry::recommended_edge_cap()
+        );
+    }
+
+    #[test]
+    fn resolve_edge_stats_max_tris_clamps_a_low_stored_value_to_the_floor() {
+        assert_eq!(
+            resolve_edge_stats_max_tris(Some(10)),
+            crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS
+        );
+    }
+
+    #[test]
+    fn resolve_edge_stats_max_tris_passes_through_a_value_at_or_above_the_floor() {
+        let above_floor = u64::from(crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS) + 1_000_000;
+        assert_eq!(resolve_edge_stats_max_tris(Some(above_floor)), above_floor as u32);
     }
 }

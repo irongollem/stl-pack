@@ -1,10 +1,11 @@
 use crate::error::AppError;
 use crate::models::events::{
     DuplicateCancelledStatus, DuplicateCompletedStatus, DuplicateFailedStatus,
-    DuplicateProgressStatus, DuplicateStartedStatus, DuplicateStatus, PackCancelledStatus,
-    PackCompletedStatus, PackFailedStatus, PackProgressStatus, PackStartedStatus, PackStatus,
-    ScanCancelledStatus, ScanCompletedStatus, ScanFailedStatus, ScanProgressStatus,
-    ScanStartedStatus, ScanStatus,
+    DuplicateProgressStatus, DuplicateStartedStatus, DuplicateStatus, GeometryCancelledStatus,
+    GeometryCompletedStatus, GeometryFailedStatus, GeometryProgressStatus, GeometryStartedStatus,
+    GeometryStatus, PackCancelledStatus, PackCompletedStatus, PackFailedStatus,
+    PackProgressStatus, PackStartedStatus, PackStatus, ScanCancelledStatus, ScanCompletedStatus,
+    ScanFailedStatus, ScanProgressStatus, ScanStartedStatus, ScanStatus,
 };
 use once_cell::sync::Lazy;
 use rusqlite::Connection;
@@ -18,10 +19,10 @@ use tauri_specta::Event;
 use uuid::Uuid;
 
 use super::{
-    db, dups, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
+    db, dups, geometry, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
     CatalogGroupResult, CatalogSearchResult, CatalogStats, DesignerCount, DuplicateGroup,
-    EnsureOutcome, FileVariant, GroupOrigin, ModelMetaUpdate, MoveOperation, NormalizeOp,
-    NormalizePlan, ReleaseSummary, TagCount,
+    EnsureOutcome, FileVariant, GroupOrigin, ModelFileGeometry, ModelMetaUpdate, MoveOperation,
+    NormalizeOp, NormalizePlan, ReleaseSummary, TagCount,
 };
 
 /// Scan and duplicate jobs share one registry; both cancel through
@@ -471,6 +472,97 @@ pub async fn start_duplicate_scan(app_handle: AppHandle) -> Result<String, AppEr
     });
 
     Ok(job_id)
+}
+
+/// Runs as a catalog job; excluded while a pack job could be deleting
+/// the loose bytes mining reads.
+#[tauri::command]
+#[specta::specta]
+pub async fn start_geometry_scan(app_handle: AppHandle) -> Result<String, AppError> {
+    if job_active("pack:") {
+        // mining reads file bytes a pack job is busy deleting
+        return Err(AppError::InvalidInput(
+            "A pack job is running — mine geometry when it finishes".to_string(),
+        ));
+    }
+    // Edge-stats cap from settings (async store read) before the blocking
+    // job — mirrors the pack_level read above start_pack. Falls back to the
+    // machine-derived recommendation if settings can't be read at all, same
+    // as a first-load seed would, rather than failing the whole scan.
+    let edge_cap = crate::settings::get_settings(app_handle.clone())
+        .await
+        .ok()
+        .and_then(|s| s.edge_stats_max_tris)
+        .unwrap_or_else(geometry::recommended_edge_cap);
+
+    let job_id = format!("geom:{}", Uuid::new_v4());
+    let cancel = register_job(&job_id)?;
+    let job_id_clone = job_id.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        GeometryStatus::Started(GeometryStartedStatus {
+            job_id: job_id_clone.clone(),
+        })
+        .emit(&app_handle)
+        .ok();
+
+        let result = (|| -> Result<geometry::GeometryOutcome, AppError> {
+            let conn = open_db(&app_handle)?;
+            let mut last_emit = Instant::now();
+            let progress_app = app_handle.clone();
+            let progress_job = job_id_clone.clone();
+            geometry::mine_geometry(&conn, &cancel, edge_cap, |processed, total| {
+                if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
+                    last_emit = Instant::now();
+                    GeometryStatus::Progress(GeometryProgressStatus {
+                        job_id: progress_job.clone(),
+                        processed,
+                        total,
+                    })
+                    .emit(&progress_app)
+                    .ok();
+                }
+            })
+        })();
+
+        unregister_job(&job_id_clone);
+        match result {
+            Ok(outcome) => {
+                GeometryStatus::Completed(GeometryCompletedStatus {
+                    job_id: job_id_clone,
+                    mined: outcome.mined,
+                    already_known: outcome.already_known,
+                    failed: outcome.failed,
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+            Err(AppError::UserCancelled(_)) => {
+                GeometryStatus::Cancelled(GeometryCancelledStatus {
+                    job_id: job_id_clone,
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+            Err(e) => {
+                GeometryStatus::Failed(GeometryFailedStatus {
+                    job_id: job_id_clone,
+                    error: e.to_string(),
+                })
+                .emit(&app_handle)
+                .ok();
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+/// What "Auto" would pick, without overwriting the stored setting.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_recommended_edge_cap() -> Result<u32, AppError> {
+    Ok(geometry::recommended_edge_cap())
 }
 
 #[tauri::command]
@@ -1187,6 +1279,20 @@ pub async fn get_catalog_model_files(
     })
     .await
     .map_err(|e| AppError::ConfigError(format!("File task failed: {}", e)))?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_model_geometry(
+    app_handle: AppHandle,
+    dir_path: String,
+) -> Result<Vec<ModelFileGeometry>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app_handle)?;
+        db::model_geometry(&conn, &dir_path)
+    })
+    .await
+    .map_err(|e| AppError::ConfigError(format!("Geometry listing task failed: {}", e)))?
 }
 
 #[tauri::command]
@@ -2328,7 +2434,7 @@ mod tests {
             [s(&newt.join("raw")), s(&newt.join("supported")), s(&troll.join("raw"))]
                 .into_iter()
                 .collect();
-        let mut units = consolidate_trash_units(&conn, &doomed, &[root_s.clone()]);
+        let mut units = consolidate_trash_units(&conn, &doomed, std::slice::from_ref(&root_s));
         units.sort();
         assert_eq!(
             units,

@@ -82,6 +82,14 @@ pub struct Settings {
     /// serde(default): an older store has no such key.
     #[serde(default)]
     pub scatter_library_dir: Option<String>,
+    /// Triangle-count ceiling above which geometry mining skips the
+    /// open-edge HashMap (see catalog::stl_facts::EDGE_STATS_MAX_TRIS and
+    /// catalog::geometry::recommended_edge_cap). Seeded from the machine's
+    /// RAM on first load; never below EDGE_STATS_MAX_TRIS — a stored value
+    /// under that floor is clamped up on read. serde(default): an older
+    /// store has no such key.
+    #[serde(default)]
+    pub edge_stats_max_tris: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]

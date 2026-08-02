@@ -40,7 +40,7 @@
       v-if="!isFindingDuplicates"
       type="button"
       class="border border-base-content/15 rounded-full px-2.5 py-0.5 text-base-content/60 cursor-pointer disabled:opacity-40"
-      :disabled="!stats?.total_files"
+      :disabled="!stats?.total_files || isMiningGeometry"
       @click="startDuplicateScan"
     >
       rescan duplicates
@@ -49,6 +49,22 @@
       <span class="loading loading-spinner loading-xs"></span>
       hashing {{ dupProgress?.processed ?? 0 }}/{{ dupProgress?.total ?? "?" }}
       <button type="button" class="link" @click="cancelDuplicateScan">
+        cancel
+      </button>
+    </span>
+    <button
+      v-if="!isMiningGeometry"
+      type="button"
+      class="border border-base-content/15 rounded-full px-2.5 py-0.5 text-base-content/60 cursor-pointer disabled:opacity-40"
+      :disabled="!stats?.total_files || isFindingDuplicates"
+      @click="startGeometryScan"
+    >
+      mine geometry
+    </button>
+    <span v-else class="flex items-center gap-2">
+      <span class="loading loading-spinner loading-xs"></span>
+      mining {{ geoProgress?.processed ?? 0 }}/{{ geoProgress?.total ?? "?" }}
+      <button type="button" class="link" @click="cancelGeometryScan">
         cancel
       </button>
     </span>
@@ -69,6 +85,14 @@ const {
   lastScanLabel,
   isFindingDuplicates,
   dupProgress,
+  isMiningGeometry,
+  geoProgress,
 } = storeToRefs(store);
-const { toggleDups, startDuplicateScan, cancelDuplicateScan } = store;
+const {
+  toggleDups,
+  startDuplicateScan,
+  cancelDuplicateScan,
+  startGeometryScan,
+  cancelGeometryScan,
+} = store;
 </script>

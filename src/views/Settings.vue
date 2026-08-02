@@ -414,6 +414,39 @@
       <div class="flex flex-col gap-1.5">
         <span
           class="font-mono font-semibold text-[10px] tracking-widest text-base-content/40"
+          >WATERTIGHTNESS CHECK LIMIT — TRIANGLES PER MESH</span
+        >
+        <div class="flex items-center gap-3">
+          <input
+            id="edge_stats_max_tris"
+            type="range"
+            min="1500000"
+            max="30000000"
+            step="100000"
+            v-model.number="settings.edge_stats_max_tris"
+            class="range range-primary range-sm flex-1"
+          />
+          <span class="font-mono font-semibold text-[13px] w-20 text-right">
+            {{ edgeCapLabel }}
+          </span>
+          <button type="button" class="btn btn-xs" @click="resetEdgeCapToAuto">
+            auto
+          </button>
+        </div>
+        <p class="text-[10.5px] text-base-content/40">
+          Meshes above this triangle count still get dimensions, volume, and
+          triangle counts when mining geometry — only the open-edge (watertight)
+          check is skipped, and the drawer marks it unchecked. The check costs
+          up to ~150 bytes of memory per triangle while a file is being mined
+          ({{ edgeCapMemoryLabel }} peak at the current limit). "auto" restores
+          the value recommended for this machine's RAM. Raising the limit and
+          mining again backfills meshes that were skipped under a lower one.
+        </p>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <span
+          class="font-mono font-semibold text-[10px] tracking-widest text-base-content/40"
           >KNOWN DESIGNERS — RECOGNIZED IN FOLDER NAMES WHEN SCANNING</span
         >
         <div
@@ -817,6 +850,7 @@ const settings = ref<Settings>({
   pack_cleanup_after: null,
   blender_setup_acknowledged: null,
   scatter_library_dir: null,
+  edge_stats_max_tris: null,
 });
 
 // Display only — the Catalog tab manages the list. Falls back to the
@@ -999,6 +1033,35 @@ const availableCores = ref(navigator.hardwareConcurrency || 4);
 const defaultThreadCount = computed(() =>
   Math.max(1, availableCores.value - 1),
 );
+
+// Mirrors the backend's floor (stl_facts::EDGE_STATS_MAX_TRIS) — the store
+// clamps on load/save anyway; this is just the pre-load display fallback.
+const EDGE_CAP_FLOOR = 1_500_000;
+const edgeCapLabel = computed(() => {
+  const cap = settings.value.edge_stats_max_tris ?? EDGE_CAP_FLOOR;
+  return `${(cap / 1_000_000).toFixed(1)}M tris`;
+});
+// The honest cost readout: worst-case ~150 bytes of transient memory per
+// triangle while one file is being mined (same constant the backend's
+// recommendation formula uses).
+const edgeCapMemoryLabel = computed(() => {
+  const bytes = (settings.value.edge_stats_max_tris ?? EDGE_CAP_FLOOR) * 150;
+  const gib = bytes / (1024 * 1024 * 1024);
+  return gib >= 1
+    ? `≈${gib.toFixed(1)} GB`
+    : `≈${Math.round(bytes / (1024 * 1024))} MB`;
+});
+const resetEdgeCapToAuto = async () => {
+  const recommended = await commands.getRecommendedEdgeCap();
+  if (recommended.status === "ok") {
+    settings.value.edge_stats_max_tris = recommended.data;
+  } else {
+    toastStore.reportError(
+      "Could not compute the recommended limit",
+      recommended.error,
+    );
+  }
+};
 
 let saveTimeout: number | null = null;
 const debouncedSave = () => {

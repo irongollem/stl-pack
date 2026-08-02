@@ -613,9 +613,8 @@ fn infer_model_identity(root: &Path, dir_path: &str) -> InferredModel {
             // leaf itself, found before any pose, so name_above_pose stays
             // false and "Spear" remains the group (combine handles those).
             if name_above_pose && variant.is_none() {
-                variant = base_name.take().map(|name| {
+                variant = base_name.take().inspect(|_| {
                     variant_dir = base_dir.take();
-                    name
                 });
             }
         } else if base_name.is_none() {

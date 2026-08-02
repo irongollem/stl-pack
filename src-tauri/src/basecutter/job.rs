@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(back.landscape_path, "/path/to/landscape.stl");
         assert_eq!(back.topper_mm, None);
         assert_eq!(back.scatter_rim, ScatterRim::Keep);
-        assert_eq!(back.glb, false);
+        assert!(!back.glb);
     }
 
     /// Pinned interface: `BaseCutJob.glb` serializes verbatim as the key
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(json["glb"], true);
 
         let back: BaseCutJob = serde_json::from_value(json).unwrap();
-        assert_eq!(back.glb, true);
+        assert!(back.glb);
     }
 
     #[test]
@@ -519,7 +519,7 @@ mod tests {
             "placements": [],
         });
         let job: BaseCutJob = serde_json::from_value(json).unwrap();
-        assert_eq!(job.glb, false);
+        assert!(!job.glb);
     }
 
     // ---- ScatterRim (docs/BASECUTTER.md's BaseCutJob.scatter_rim) ----
