@@ -1,16 +1,5 @@
-//! Batch preview rendering: many catalog models in ONE Blender launch.
-//!
-//! Every `blender -b` costs seconds of startup before the first sample; for
-//! a library-wide preview sweep that overhead dominates. The batch job
-//! writes a manifest, launches Blender once with `--batch`, and follows the
-//! script's machine-readable stdout (BATCH_MODEL / MEASURED / BATCH_DONE
-//! between Cycles' own Sample lines) to attribute progress and persist each
-//! finished model's preview + measured geometry INCREMENTALLY — a cancel or
-//! crash keeps everything already rendered.
-//!
-//! Batch previews are deliberately clean (no branding overlay): they're
-//! catalog thumbnails, not promo shots, which is what lets the whole flow
-//! run backend-side with zero webview involvement.
+//! Batch preview rendering: many catalog models in ONE Blender launch,
+//! because `blender -b` startup cost would otherwise be paid per model.
 
 use crate::catalog::{self, db};
 use crate::error::AppError;
@@ -30,12 +19,10 @@ use tauri_specta::Event;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-/// Batch job ids carry this prefix in ACTIVE_RENDERS, both to let
-/// cancel_render serve them unchanged and to answer batch_render_active().
+/// Batch job ids carry this prefix in ACTIVE_RENDERS, so
+/// batch_render_active() can recognize them.
 const BATCH_PREFIX: &str = "batch-render:";
 
-/// Whether a batch render is running — pack/scan jobs consult this before
-/// mutating the rows and files the batch is reading.
 pub fn batch_render_active() -> bool {
     ACTIVE_RENDERS
         .lock()
@@ -43,8 +30,7 @@ pub fn batch_render_active() -> bool {
         .unwrap_or(false)
 }
 
-/// One model of the batch, as the frontend selected it (a RenderCandidate
-/// the user confirmed). rotation is the stored "x,y,z" or null → 90,0,0.
+/// rotation is the stored "x,y,z" or null → 90,0,0.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct BatchRenderTarget {
     pub dir_path: String,
@@ -157,7 +143,6 @@ pub async fn start_batch_render(
     Ok(job_id)
 }
 
-/// Per-model bookkeeping the stdout loop accumulates before completion.
 #[derive(Default, Clone)]
 struct ModelScratch {
     dims_mm: Option<String>,
@@ -230,10 +215,9 @@ async fn run_batch_job(
     }
 }
 
-/// Map the shared harness's error into run_batch_child's exact pre-refactor
-/// error texts. `AbortedByCaller` never happens here (the `on_line` closure
-/// below never returns `Break`) — kept in the match only because
-/// `BlenderRunError` must be matched exhaustively.
+/// `AbortedByCaller` never happens here (the `on_line` closure below never
+/// returns `Break`) — kept in the match only because `BlenderRunError`
+/// must be matched exhaustively.
 fn map_run_error(e: engine::BlenderRunError) -> AppError {
     use engine::BlenderRunError::*;
     match e {
@@ -316,9 +300,9 @@ async fn run_batch_child(
     Ok(())
 }
 
-/// React to one machine-readable script line. Completion work (preview copy
-/// and DB writes) is synchronous file/SQLite IO measured in milliseconds
-/// against renders measured in seconds — done inline, no task juggling.
+/// Completion work (preview copy and DB writes) is synchronous file/SQLite
+/// IO measured in milliseconds against renders measured in seconds — done
+/// inline, no task juggling.
 #[allow(clippy::too_many_arguments)]
 fn handle_batch_line(
     app_handle: &AppHandle,
@@ -390,10 +374,8 @@ fn handle_batch_line(
     }
 }
 
-/// Persist one rendered model: the PNG becomes its catalog preview, the
-/// measured geometry + the rotation the render used land in the index, and
-/// an EXISTING model.json is enriched in place (never created — creating
-/// one would flip the folder to sidecar authority).
+/// An EXISTING model.json is enriched in place — never created, since
+/// creating one would flip the folder to sidecar authority.
 fn persist_finished_model(
     app_handle: &AppHandle,
     target: &BatchRenderTarget,

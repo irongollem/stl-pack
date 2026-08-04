@@ -14,23 +14,16 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-/// The Blender script ships INSIDE the binary. As a bundled resource it was
-/// only re-copied next to the binary when the Rust code rebuilt, so pure
-/// script edits silently kept rendering with a stale copy during dev.
+/// Embedded via include_str! rather than shipped as a bundled resource file:
+/// a bundled copy was only re-copied next to the binary when the Rust code
+/// rebuilt, so pure script edits silently kept rendering a stale copy in dev.
 const RENDER_SCRIPT: &str = include_str!("../../resources/render_mini.py");
 
 /// Write embedded bytes where Blender (or anything else) can read them.
 /// Always overwrites, so the file on disk can never drift from the built
-/// app — the trap this avoids: as a bundled resource a file was only
-/// re-copied next to the binary when the Rust code rebuilt, so a pure
-/// resource edit silently kept running a stale copy during dev. Shared by
-/// every materialize_embedded_* wrapper below, and takes bytes rather than
-/// `&str` so it doubles as the binary-asset path (scatter's bundled STLs)
-/// without a second copy of the write/overwrite logic. `file_name` may
-/// itself contain subdirectory components (e.g. "scatter/skull.stl") — the
-/// full parent chain under the app dir is created, not just the app dir
-/// itself, so callers can namespace their materialized files without each
-/// hand-rolling a create_dir_all.
+/// app (same trap as RENDER_SCRIPT above). `file_name` may contain
+/// subdirectory components ("scatter/skull.stl"); the full parent chain
+/// is created, not just the app dir itself.
 fn materialize_embedded_bytes(
     app_handle: &AppHandle,
     file_name: &str,
@@ -50,10 +43,7 @@ fn materialize_embedded_bytes(
     Ok(path)
 }
 
-/// Write an embedded Blender script where Blender can read it — the `&str`
-/// (text) wrapper over `materialize_embedded_bytes`. See that function's
-/// doc comment for the always-overwrite rationale, shared by every embedded
-/// script (render_mini.py, base_cut.py, scatter_landscape.py, ...).
+/// The `&str` (text) wrapper over `materialize_embedded_bytes`.
 pub(crate) fn materialize_embedded_script(
     app_handle: &AppHandle,
     file_name: &str,
@@ -62,12 +52,8 @@ pub(crate) fn materialize_embedded_script(
     materialize_embedded_bytes(app_handle, file_name, contents.as_bytes())
 }
 
-/// Write an embedded binary asset (a bundled scatter STL, its manifest,
-/// credits file, ...) where it can be read from an absolute path — the
-/// binary-asset sibling of `materialize_embedded_script`, see its doc
-/// comment. Public within the crate: `basecutter::scatter_assets` is the
-/// first consumer, and any future embedded binary resource reuses this
-/// instead of duplicating the write/overwrite logic a third time.
+/// The binary-asset sibling of `materialize_embedded_script`, for anything
+/// that isn't UTF-8 text (a bundled scatter STL, its manifest, ...).
 pub(crate) fn materialize_embedded_asset(
     app_handle: &AppHandle,
     file_name: &str,
@@ -76,8 +62,6 @@ pub(crate) fn materialize_embedded_asset(
     materialize_embedded_bytes(app_handle, file_name, contents)
 }
 
-/// Write the embedded render script where Blender can read it. Always
-/// overwrites, so the file on disk can never drift from the built app.
 pub fn materialize_render_script(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
     materialize_embedded_script(app_handle, "render_mini.py", RENDER_SCRIPT)
 }
@@ -263,14 +247,9 @@ pub fn progress_args(version: &str) -> &'static [&'static str] {
     }
 }
 
-// --------------------------- shared Blender run harness --------------------
-
 /// A Blender child process that ran to completion (not cancelled, not
-/// aborted by `on_line`): its exit status plus the stdout/stderr tail ring
-/// buffers (last 10 lines each) for post-mortem error messages. Whether a
-/// given `status` counts as success is the caller's call — some callers
-/// additionally require an output file to exist, some fold the tails into
-/// their own error string, some don't need the tails at all.
+/// aborted by `on_line`): exit status plus stdout/stderr tail ring buffers
+/// (last 10 lines each). Whether `status` counts as success is caller's call.
 #[derive(Debug)]
 pub(crate) struct BlenderRun {
     pub status: ExitStatus,
@@ -279,11 +258,8 @@ pub(crate) struct BlenderRun {
 }
 
 /// Why `run_blender_lines` did not reach a `BlenderRun`. Deliberately more
-/// granular than "spawn / io / cancelled": job.rs, run_blender, and
-/// run_batch_child each had their own exact wording per failure stage before
-/// this dedup, and this enum keeps each stage distinguishable so every
-/// caller can still produce its own exact text (see each call site's error
-/// mapping — the messages are unchanged from before the refactor).
+/// granular than "spawn / io / cancelled" so each caller can produce its
+/// own exact error text per failure stage.
 #[derive(Debug)]
 pub(crate) enum BlenderRunError {
     /// `Command::spawn` itself failed (bad binary path, no exec perms, ...).
@@ -305,44 +281,24 @@ pub(crate) enum BlenderRunError {
         stderr_tail: String,
     },
     /// `cancel`'s `Notify` fired mid-run: the child was killed WITHOUT
-    /// waiting for it — a killed process's exit status is noise, matching
-    /// every caller's pre-refactor cancel handling.
+    /// waiting for it — a killed process's exit status is noise.
     Cancelled {
         stdout_tail: String,
         stderr_tail: String,
     },
-    /// `on_line` returned `ControlFlow::Break` — basecutter's
-    /// validation-failure gate is the only current user of this (the
-    /// validation pass must kill the child immediately rather than let it
-    /// keep cutting against a landscape it just rejected). Given the same
-    /// kill-without-waiting treatment as `Cancelled` but kept as a distinct
-    /// variant so a caller can give it its own error text.
+    /// `on_line` returned `ControlFlow::Break` — same kill-without-waiting
+    /// treatment as `Cancelled`, but a distinct variant so a caller can
+    /// give it its own error text.
     AbortedByCaller {
         stdout_tail: String,
         stderr_tail: String,
     },
 }
 
-/// The shared Blender child-process harness, extracted out of job.rs,
-/// render/commands.rs, and render/batch.rs, which each copy-pasted it
-/// verbatim: pipe stdout/stderr + `stdin(null)` + `kill_on_drop`, spawn, tee
-/// stderr into a 10-line ring buffer on a background task, read stdout
-/// line-by-line into another 10-line ring buffer while invoking `on_line`
-/// for each raw line, race that against `cancel` (if given) with
-/// kill-on-cancel, then `wait()` for the exit status.
-///
-/// `on_line` receives each stdout line exactly as read (untrimmed — callers
-/// already trim where they need to). Returning `ControlFlow::Break(())`
-/// asks for an immediate kill-and-stop (see `BlenderRunError::AbortedByCaller`);
-/// `Continue` keeps reading. `cancel` is optional so a caller with no
-/// cancellation source (there is none today, but the harness shouldn't
-/// assume one) can pass `None` and simply never race against it.
-///
-/// This is pure process plumbing. Per-line parsing/side-effects, success
-/// criteria (exit status, output-file checks, terminal-token bookkeeping),
-/// event emissions, and error text are ALL caller-side — see
-/// job.rs::spawn_and_parse, render/commands.rs::run_blender, and
-/// render/batch.rs::run_batch_child for how each keeps its own behavior.
+/// Pipes stdout/stderr, invokes `on_line` per raw stdout line (untrimmed),
+/// and races against optional `cancel`. `on_line` returning
+/// `ControlFlow::Break(())` kills the child immediately (see
+/// `BlenderRunError::AbortedByCaller`); `Continue` keeps reading.
 pub(crate) async fn run_blender_lines<'a>(
     mut cmd: Command,
     cancel: Option<&'a Notify>,
@@ -389,13 +345,10 @@ pub(crate) async fn run_blender_lines<'a>(
         (out, err)
     };
 
-    // Registered ONCE, right here, and kept alive across every loop
-    // iteration: a fresh `notified()` per iteration would drop a cancel that
-    // lands between iterations (notify_one()'s stored wake-up permit only
-    // helps a waiter that is ALREADY registered when it fires). Boxed rather
-    // than `tokio::pin!`-ed because `cancel` is optional: with no Notify to
-    // wait on we still need a future to race against, one that simply never
-    // resolves.
+    // Registered ONCE and kept alive across every loop iteration: a fresh
+    // `notified()` per iteration could drop a cancel that lands between
+    // iterations. Boxed rather than `tokio::pin!`-ed because `cancel` is
+    // optional — with no Notify, we still need a future that never resolves.
     let mut cancelled: Pin<Box<dyn Future<Output = ()> + Send + 'a>> = match cancel {
         Some(notify) => Box::pin(notify.notified()),
         None => Box::pin(std::future::pending()),
@@ -440,19 +393,9 @@ pub(crate) async fn run_blender_lines<'a>(
     Ok(BlenderRun { status, stdout_tail, stderr_tail })
 }
 
-/// The shared prefix every headless render_mini.py invocation starts with —
-/// `build_render_command` and `build_batch_render_command` were otherwise
-/// byte-for-byte identical up to their mode-specific flags. `--python-exit-code
-/// 1` makes an uncaught script exception exit Blender non-zero instead of
-/// Blender's default of exiting 0 after a Python traceback (the same gap
-/// `basecutter::job::build_base_cut_command` closed). For single-render this
-/// catches e.g. `import_join`'s "File not found"/"STL import produced no
-/// mesh" `SystemExit`s (previously only caught indirectly, by `run_blender`
-/// noticing no output file appeared). For batch mode it only matters for a
-/// crash BEFORE run_batch's per-entry `try/except` (a bad manifest file,
-/// ...) — a failure inside the loop is already caught there and reported as
-/// a machine-readable `BATCH_DONE {"ok":false}` line, so Blender still exits
-/// 0 (correctly) after a batch with individual failures.
+/// The shared prefix every headless render_mini.py invocation starts with.
+/// `--python-exit-code 1` makes an uncaught script exception exit Blender
+/// non-zero instead of the default 0-after-traceback.
 fn render_script_invocation(blender: &BlenderInfo, script: &Path) -> Command {
     let mut cmd = new_command(Path::new(&blender.path));
     cmd.args(progress_args(&blender.version));
@@ -528,21 +471,13 @@ pub fn build_render_command(
     cmd
 }
 
-/// `--base` payload: the user's NOMINAL footprint plus Rust's already-
-/// derived cut (top-face) footprint and the plinth profile — same ownership
-/// rule as the base cutter job (docs/BASECUTTER.md "The plinth": Rust owns
-/// the nominal->cut derivation via `top_face_of`, the script only lofts
-/// between the two footprints it's handed, never re-deriving). Inline JSON
-/// as ONE argv element, same reasoning as `--config` above.
+/// `--base` payload: the user's nominal footprint plus Rust's already-
+/// derived cut (top-face) footprint (docs/BASECUTTER.md "The plinth") —
+/// the script only lofts between the two, never re-derives.
 ///
-/// `PlinthParams::default()` here — not the user's Base Cutter profile — is
-/// deliberate, not a stub: per docs/BASECUTTER.md "Synergy: standard bases
-/// in the Render tool", a rendered mini stood on a base only reads as a
-/// scale cue if it's the industry-standard measured profile every hobbyist
-/// already recognizes. A user's customized taper/wall/hollow settings are a
-/// Base Cutter *cutting* concern (what actually gets printed) and must not
-/// leak into this shared reference, or the same "32 mm round" would render
-/// differently per user and stop being a legible scale reference at all.
+/// Uses `PlinthParams::default()`, not the user's Base Cutter profile: a
+/// rendered base only reads as a scale cue if it's the standard profile
+/// every hobbyist recognizes (docs/BASECUTTER.md "Synergy").
 fn base_arg_json(nominal: &crate::basecutter::cutters::CutterKind) -> String {
     use crate::basecutter::cutters::{top_face_of, PlinthParams};
     let plinth = PlinthParams::default();
@@ -582,13 +517,9 @@ pub fn parse_sample_progress(line: &str) -> Option<(u32, u32)> {
     Some((current, total))
 }
 
-// ----------------------------- batch mode ---------------------------------
-
-/// One model in a batch manifest — the script renders these sequentially in
-/// a single Blender launch (startup cost paid once for the whole sweep).
-/// Deliberately a struct, not positional args: a future scale-reference
-/// figure ("banana for scale") is one more optional field here plus a script
-/// flag, no pipeline redesign.
+/// One model in a batch manifest, rendered sequentially in a single
+/// Blender launch. Deliberately a struct, not positional args: a future
+/// field (e.g. a scale-reference figure) needs no pipeline redesign.
 #[derive(serde::Serialize, Debug, Clone)]
 pub struct BatchEntry {
     pub parts: Vec<String>,
@@ -676,8 +607,8 @@ pub fn parse_batch_line(line: &str) -> Option<BatchLine> {
     None
 }
 
-/// Write the manifest where the batch job's Blender can read it. Scratch
-/// space per job id; the job deletes the dir when it ends.
+/// Scratch space for one batch job, keyed by job id; the job deletes the
+/// dir when it ends.
 pub fn batch_scratch_dir(app_handle: &AppHandle, job_id: &str) -> Result<PathBuf, AppError> {
     let dir = app_handle
         .path()
@@ -769,10 +700,9 @@ mod tests {
         );
     }
 
-    /// Same gap basecutter's build_base_cut_command closed: without this
-    /// flag Blender exits 0 even after an uncaught Python exception (e.g.
-    /// import_join's "File not found" SystemExit), so a pre-render crash
-    /// could only be caught indirectly via the missing-output-file check.
+    /// Without this flag, Blender exits 0 even after an uncaught Python
+    /// exception, so a pre-render crash could only be caught indirectly via
+    /// the missing-output-file check.
     #[test]
     fn render_command_has_python_exit_code_guard() {
         let blender = BlenderInfo {
@@ -915,16 +845,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Drives the actual shared harness (`run_blender_lines`), not just
-    /// command construction — the render pipeline had no fast integration
-    /// test exercising the refactored-out plumbing itself (spawn, stdout
-    /// piping, cancel-select loop, wait). `run_blender` in
-    /// render/commands.rs needs an `AppHandle` to test the same way, which
-    /// is impractical to construct headless; `run_blender_lines` needing
-    /// only a `Command` + closure is exactly the "factor the testable core"
-    /// escape hatch — it's the part worth testing against a real Blender
-    /// anyway, since render/commands.rs's `run_blender` is now a thin
-    /// wrapper (event emission + output-file check) around it.
+    /// Drives the shared harness (`run_blender_lines`) directly — testing
+    /// `run_blender` itself would need an `AppHandle`, impractical headless.
     /// Run with: cargo test -- --ignored
     #[tokio::test]
     #[ignore = "requires a local Blender install and ~30s"]
@@ -1106,9 +1028,6 @@ mod tests {
         assert!(cmd.as_std().get_args().any(|arg| arg == "--translucent"));
     }
 
-    /// `--base` must carry BOTH the user's nominal footprint and Rust's
-    /// already-derived cut (top-face) footprint — the script must never
-    /// re-derive the taper shrink itself (docs/BASECUTTER.md "The plinth").
     #[test]
     fn base_arg_carries_nominal_and_derived_cut() {
         use crate::basecutter::cutters::CutterKind;
@@ -1152,7 +1071,6 @@ mod tests {
         assert_eq!(payload["nominal"]["diameter_mm"], 32.0);
         assert_eq!(payload["cut"]["kind"], "circle");
         // 32 - 2*3.7*tan(15deg) = 30.017, same derivation
-        // top_face_of_circle_matches_measured_taper pins in basecutter::cutters
         let cut_diameter = payload["cut"]["diameter_mm"].as_f64().unwrap();
         assert!((cut_diameter - 30.017).abs() < 0.01);
         assert_eq!(payload["height_mm"], 3.7);
