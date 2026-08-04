@@ -1,26 +1,17 @@
 //! Compressed-at-rest packing: a model directory's DIRECT model files
-//! bundled into one Zstd-compressed ZIP (`model.plinthpack`) plus a loose
-//! `pack.json` sidecar. The sidecar carries everything the scanner needs
-//! (names, sizes, mtimes, checksums), so a rescan of a packed model reads
-//! one small JSON — it never opens the archive, which matters over SMB.
+//! bundled into `model.plinthpack` (Zstd zip) plus a loose `pack.json`
+//! sidecar, so a rescan reads one small JSON instead of opening the
+//! archive — which matters over SMB.
 //!
-//! The pack unit is one catalog member dir (a dir directly holding model
-//! files), non-recursive: nested variant dirs are members themselves and
-//! carry their own archive, so no archive can capture another model's
-//! files. Only model files (MODEL_EXTENSIONS) are packed. Images,
-//! `model.json` sidecars and extras stay loose, so previews and metadata
-//! keep working and every catalog key (`dir_path`, file `path`) stays
-//! stable — the index records packed files under the real path they would
-//! occupy on disk.
+//! Non-recursive: a nested variant dir packs itself, so no archive can
+//! capture another model's files. Only MODEL_EXTENSIONS are packed;
+//! images and `model.json` stay loose.
 //!
 //! State transitions are crash-safe by ordering, not by locks:
-//! - pack: compress to a hidden temp → verify every byte → rename archive →
-//!   rename sidecar → delete originals. A crash before the sidecar rename
-//!   leaves loose files intact (an orphan archive is swept on retry); a crash
-//!   after leaves archive + sidecar authoritative and re-running finishes the
-//!   deletes (which is also what makes bulk pack jobs resumable).
-//! - unpack: extract → delete archive + sidecar. Re-runnable; the scanner's
-//!   loose-wins rule keeps the catalog correct in every intermediate state.
+//! - pack: compress to temp → verify → rename archive → rename sidecar →
+//!   delete originals. Interrupted at any point, a re-run finishes it.
+//! - unpack: extract → delete archive + sidecar. Re-runnable; the
+//!   scanner's loose-wins rule keeps the catalog correct mid-way.
 
 use crate::catalog::MODEL_EXTENSIONS;
 use crate::catalog::scanner::{is_hidden, read_json};
@@ -133,11 +124,11 @@ pub fn bare_hash(checksum: &str) -> &str {
     checksum.strip_prefix("blake3:").unwrap_or(checksum)
 }
 
-/// A packed entry's real on-disk location: entry names use '/' regardless of
-/// platform, so split into components rather than joining the raw string.
-/// Traversal segments are dropped defensively — our own writer never emits
-/// them, but a sidecar is just a JSON file anyone can edit, and an entry
-/// named "../../x" must not resolve outside the model dir.
+/// A packed entry's real on-disk location: entry names use '/' regardless
+/// of platform, so split into components rather than joining the raw
+/// string. Traversal segments are dropped defensively — a sidecar is
+/// just a JSON file anyone can edit, and "../../x" must not resolve
+/// outside the model dir.
 pub fn entry_disk_path(model_dir: &Path, name: &str) -> PathBuf {
     let mut path = model_dir.to_path_buf();
     for segment in name
@@ -196,10 +187,9 @@ pub fn pack_model(
     }
 
     // Collect the dir's DIRECT model files only. Not recursive on purpose:
-    // any subdirectory that holds model files is a catalog member in its own
-    // right (that's the scanner's definition of a model) and packs itself —
-    // recursing here would swallow a nested variant's files into the parent's
-    // archive and leave the variant nothing to pack. Images, jsons and the
+    // any subdirectory that holds model files is a catalog member in its
+    // own right and packs itself — recursing here would swallow a nested
+    // variant's files into the parent's archive. Images, jsons and the
     // archive itself stay loose by design (extension filter).
     let mut plan: ArchivePlan = Vec::new();
     let mut stats_by_name: HashMap<String, (u64, i64)> = HashMap::new();
@@ -257,13 +247,10 @@ pub fn pack_model(
         )));
     }
     if archive_path.is_file() {
-        // Archive without sidecar, loose files present. Two very different
-        // situations look like this: a crash between the two renames (loose
-        // set complete — the archive is a discardable duplicate) and a LOST
-        // sidecar plus a stray loose file (the archive holds the only copy
-        // of everything else). Only the archive itself can tell them apart:
-        // discard it only when every entry is covered by a loose file, else
-        // rebuild the sidecar from it and finish as a repair.
+        // Archive without sidecar, loose files present — two different
+        // crash states look identical here (a clean crash before the
+        // sidecar rename vs. a LOST sidecar with a stray loose file).
+        // Only the archive can tell them apart (orphan_covered_by_loose).
         if orphan_covered_by_loose(model_dir, &archive_path) {
             fs::remove_file(&archive_path)?;
         } else {
@@ -386,12 +373,11 @@ fn write_sidecar(model_dir: &Path, sidecar: &PackSidecar) -> Result<(), AppError
 }
 
 /// Self-heal: rebuild a lost or unreadable pack.json from the archive
-/// itself. The zip's central directory gives the names; the checksums are
-/// recomputed by decompressing each entry (one full read — the slow path,
-/// only ever taken for a damaged dir). Two honest limitations, both
-/// inherent: dedup-elided names lived only in the sidecar and are gone
-/// (their bytes remain under the twin's name), and original mtimes weren't
-/// archived, so entries take the archive's own mtime.
+/// itself. The zip's central directory gives the names; checksums are
+/// recomputed by decompressing each entry (slow — only for a damaged
+/// dir). Two inherent limitations: dedup-elided names are gone (their
+/// bytes remain under the twin's name), and mtimes aren't archived, so
+/// entries take the archive's own mtime.
 pub fn rebuild_sidecar(model_dir: &Path) -> Result<PackSidecar, AppError> {
     let archive_path = model_dir.join(PACK_ARCHIVE_NAME);
     let metadata = fs::metadata(&archive_path)
@@ -549,9 +535,8 @@ pub fn unpack_model(model_dir: &Path) -> Result<UnpackOutcome, AppError> {
     })
 }
 
-/// A non-clobbering sibling name for a diverged loose file: "body (edited).stl",
-/// numbered when even that exists. Shared with release-update imports, which
-/// honor the same "never truncate a user-edited file" contract.
+/// A non-clobbering sibling name for a diverged loose file:
+/// "body (edited).stl", numbered when even that exists.
 pub(crate) fn edited_aside_path(path: &Path) -> PathBuf {
     let stem = path
         .file_stem()
@@ -580,8 +565,6 @@ pub fn read_sidecar(model_dir: &Path) -> Result<Option<PackSidecar>, AppError> {
     let sidecar: PackSidecar = read_json(&sidecar_path)?;
     Ok(Some(sidecar))
 }
-
-// ---- ephemeral extraction: use packed files without unpacking ----
 
 /// What extract_paths_ephemeral wrote for one path. Cleanup deletes a file
 /// only while its size+mtime still match this record — a file the slicer or
@@ -612,12 +595,10 @@ fn record_stat(metadata: &fs::Metadata, checksum: &str) -> EphemeralRecord {
     }
 }
 
-/// Materialize just the `wanted` paths from a packed model dir's archive —
-/// the "print two files from a 40-file bundle" path. The archive and
-/// sidecar are NOT touched: they stay authoritative, and the extracted
-/// files are temporary working copies tracked for cleanup_ephemeral.
-/// Dedup-elided entries are read from their checksum twin inside the zip,
-/// so no extra files materialize. Paths already on disk are skipped and NOT
+/// Materialize just the `wanted` paths from a packed model dir's archive
+/// — the "print two files from a 40-file bundle" path. The archive and
+/// sidecar stay untouched and authoritative; extracted files are tracked
+/// for cleanup_ephemeral. Paths already on disk are skipped and NOT
 /// recorded — a loose file we didn't create is not ours to delete. Cancel
 /// rolls back this call's own extracts.
 pub fn extract_paths_ephemeral(
@@ -801,10 +782,10 @@ pub fn sweep_ephemeral_on_exit() {
     }
 }
 
-/// Decompress every stored entry and compare against the checksum taken from
-/// the source bytes — proof the archive round-trips before originals are
-/// deleted. One extra full read of the model, by design (import_release sets
-/// the precedent: never trust an unverified archive).
+/// Decompress every stored entry and compare against the checksum taken
+/// from the source bytes — proof the archive round-trips before originals
+/// are deleted. One extra full read of the model, by design: never trust
+/// an unverified archive.
 fn verify_archive(
     archive_path: &Path,
     entries: &[crate::file::compressors::ArchiveFileEntry],
@@ -884,8 +865,8 @@ fn delete_packed_originals(
 }
 
 /// Remove leftover pack temps from crashed runs (any PID — a temp is only
-/// ever live while its pack_model call is running, and packs are serialized
-/// per model dir by the job layer).
+/// ever live while its pack_model call is running, and packs are
+/// serialized per model dir).
 fn sweep_stale_temps(model_dir: &Path) {
     let Ok(read_dir) = fs::read_dir(model_dir) else {
         return;
