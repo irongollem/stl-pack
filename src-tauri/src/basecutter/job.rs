@@ -1,10 +1,8 @@
-//! Base Cutter job pipeline: embed the script, build the job JSON,
-//! spawn headless Blender, parse its stdout token protocol into
-//! `BaseCutStatus` events. Mirrors `render/batch.rs` — one Blender launch,
-//! N cuts, incremental progress, kill-on-cancel, a stdout tail ring buffer
-//! for post-mortems. See docs/BASECUTTER.md "The cut pipeline" and
-//! "Pinned interfaces", and base_cut.py's own docstring for the exact job
-//! JSON shape and stdout protocol this file is the Rust side of.
+//! Base Cutter job pipeline: embed the script, build the job JSON, spawn
+//! headless Blender, parse its stdout token protocol into `BaseCutStatus`
+//! events. See docs/BASECUTTER.md "The cut pipeline" and "Pinned
+//! interfaces" for the job JSON shape and stdout protocol this file
+//! implements.
 
 use crate::basecutter::cutters::{top_face_of, Placement, PlinthParams};
 use crate::error::AppError;
@@ -16,34 +14,19 @@ use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 use tokio::sync::Notify;
 
-/// The Blender script ships INSIDE the binary — same always-overwrite
-/// materialization as render_mini.py (see engine::materialize_embedded_script
-/// for the stale-copy trap this avoids).
+/// The Blender script ships INSIDE the binary (see
+/// engine::materialize_embedded_script for the always-overwrite rationale).
 const BASE_CUT_SCRIPT: &str = include_str!("../../resources/base_cut.py");
 
-/// Write the embedded base-cut script where Blender can read it. Always
-/// overwrites, so the file on disk can never drift from the built app.
 pub fn materialize_base_cut_script(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
     crate::render::engine::materialize_embedded_script(app_handle, "base_cut.py", BASE_CUT_SCRIPT)
 }
 
-/// Rim fate for a scatter piece (a loose shell in the landscape — see
-/// docs/SCATTER.md "Pieces are placed as LOOSE SHELLS") that straddles a
-/// cutter's rim, per docs/BASECUTTER.md's pinned `BaseCutJob.scatter_rim`.
-/// A bare lowercase JSON STRING (`"keep"` / `"slice"`), not a tagged
-/// object like `CutterKind` — matches base_cut.py's `job.get("scatter_rim",
-/// "keep")` verbatim.
-///
-/// `Keep` (the default — see `Default` below): per cut, only the terrain
-/// shell is intersected with the cutter prism; separately, every piece
-/// whose centroid lies inside that placement's derived cut footprint is
-/// unioned in WHOLE and may overhang the rim like real hand-made scenic
-/// basing. `Slice`: nearby piece copies are clipped per cut and appended as
-/// loose slicer-friendly shells — a piece straddling a rim is sliced flush
-/// without Boolean-unioning the full scattered landscape first.
-/// A landscape with nothing scattered onto it (a plain generated bake, a
-/// designer sculpt) is a single shell, so both variants behave
-/// identically on it — see base_cut.py's `separate_into_shells`.
+/// Rim fate for a scatter piece that straddles a cutter's rim — see
+/// docs/BASECUTTER.md's pinned `BaseCutJob.scatter_rim` for the full
+/// Keep/Slice contract. A bare lowercase JSON string (`"keep"` /
+/// `"slice"`), matching base_cut.py's `job.get("scatter_rim", "keep")`
+/// read verbatim.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum ScatterRim {
@@ -72,36 +55,24 @@ pub struct BaseCutJob {
     #[serde(default)]
     pub topper_mm: Option<f64>,
     /// See `ScatterRim`. `#[serde(default)]` is protocol hygiene for
-    /// DESERIALIZING a JSON blob Rust didn't produce itself (a hand-edited
-    /// job file, a minimal test fixture) — it is not there to support any
-    /// particular vintage of file. Rust is the ground truth for what
-    /// actually reaches the script: `BaseCutJob` is never constructed
-    /// without deciding this field (it's not an `Option`), so every job
-    /// Rust serializes carries an explicit `"scatter_rim"` key, never an
-    /// absent one — see `job_always_serializes_scatter_rim_explicitly`
-    /// below, which pins that as the one ground truth so the two defaults
-    /// (this one, and base_cut.py's own lenient `job.get("scatter_rim",
-    /// "keep")` read) can't drift silently against each other.
+    /// deserializing hand-edited/test JSON — `BaseCutJob` is never built
+    /// without deciding this field, so Rust always serializes it explicitly.
     #[serde(default)]
     pub scatter_rim: ScatterRim,
-    /// VTT GLB export design doc "Base cut": when true, base_cut.py imports
-    /// the landscape's `.glb` twin (swap extension of `landscape_path`)
-    /// instead of the bare STL, paints/repairs colors through every cut,
-    /// and exports a `.glb` twin alongside each cut STL (`CutDone.glb`
-    /// below). `false` (the default) is today's behavior EXACTLY — see
-    /// base_cut.py's own docstring "glb mode" section for the full
-    /// contract. `#[serde(default)]` so old job files/frontends without
-    /// the key keep working.
+    /// When true, base_cut.py imports the landscape's `.glb` twin instead
+    /// of the bare STL and exports a `.glb` twin alongside each cut STL
+    /// (`CutDone.glb` below). `false` (the default) is byte-identical to
+    /// pre-GLB behavior. See docs/BASECUTTER.md "VTT GLB export" for the
+    /// full contract.
     #[serde(default)]
     pub glb: bool,
 }
 
-/// One parsed line of base_cut.py's stdout protocol (see its docstring and
+/// One parsed line of base_cut.py's stdout protocol (see
 /// docs/BASECUTTER.md "Pinned interfaces"). `Validated`/`ValidationFailed`
 /// carry the raw JSON report rather than a fixed struct — the script's
 /// report dict is free to grow fields without this parser needing to know
-/// about every one of them; job.rs's caller decides how to shape it into
-/// an event payload.
+/// about every one of them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BaseCutToken {
     Validating,
@@ -267,13 +238,10 @@ pub fn write_job_file(dir: &Path, job: &BaseCutJob, job_id: &str) -> Result<Path
 }
 
 /// Assemble the headless base-cut invocation: `--background
-/// --factory-startup --python-exit-code 1 --python <script> -- --job <json>`
-/// (see docs/BASECUTTER.md "Pinned interfaces" — same `--` convention as
-/// render_mini.py, but base_cut.py takes one job file, not per-cut flags).
-/// `--python-exit-code 1` makes an uncaught script exception (bad job JSON,
-/// a multi-object STL, an unwritable out_dir — anything before the per-cut
-/// try/except in main()'s loop) exit Blender non-zero; without it Blender's
-/// default behaviour is to exit 0 even after a Python traceback, so a
+/// --factory-startup --python-exit-code 1 --python <script> -- --job <json>`.
+/// `--python-exit-code 1` makes an uncaught script exception (bad job
+/// JSON, a multi-object STL, an unwritable out_dir) exit Blender non-zero;
+/// without it Blender exits 0 even after a Python traceback, so a
 /// pre-loop crash would otherwise be reported as `Finished{ok_count:0}`
 /// instead of a failure.
 pub fn build_base_cut_command(
@@ -295,15 +263,12 @@ pub fn build_base_cut_command(
 }
 
 /// Spawn Blender against `job_path` and parse its stdout into
-/// `BaseCutToken`s, invoking `on_token` for each one as it arrives (so a
+/// `BaseCutToken`s, invoking `on_token` for each one as it arrives — a
 /// caller can emit incremental progress events without this function
-/// knowing anything about `AppHandle` or specta events — that's what keeps
-/// it directly testable, per docs/BASECUTTER.md phase 3's done-when).
+/// knowing anything about `AppHandle` or specta events.
 ///
-/// `VALIDATION_FAILED` is treated as fatal: the validation pass is meant to
-/// gate the whole job (docs/BASECUTTER.md "The cut pipeline"), so the child
-/// is killed rather than left to keep cutting against a landscape it just
-/// rejected.
+/// `VALIDATION_FAILED` is treated as fatal (see the `ControlFlow::Break`
+/// below).
 ///
 /// Returns the number of cuts that succeeded (from the script's own
 /// `JOB_DONE` count when present, else a local tally of `CUT_DONE` tokens)
@@ -479,12 +444,6 @@ mod tests {
         assert!(!back.glb);
     }
 
-    /// Pinned interface: `BaseCutJob.glb` serializes verbatim as the key
-    /// "glb" (no rename), `true` round-trips, and old job JSON that omits
-    /// the key entirely still deserializes (`#[serde(default)]` backfills
-    /// `false`) — mirrors job_with_topper_mm_serializes_the_key /
-    /// job_without_topper_mm_key_defaults_to_none's pattern for the other
-    /// additive job-level flag.
     #[test]
     fn job_glb_true_serializes_the_key() {
         let job = BaseCutJob {
@@ -522,13 +481,8 @@ mod tests {
         assert!(!job.glb);
     }
 
-    // ---- ScatterRim (docs/BASECUTTER.md's BaseCutJob.scatter_rim) ----
-
-    /// Ground-truth pin (see ScatterRim's field doc comment on BaseCutJob):
-    /// Rust always serializes `scatter_rim` explicitly — never omits it,
-    /// regardless of whether the caller picked the default. A job whose
-    /// `scatter_rim` is `Slice` proves this isn't just "the default happens
-    /// to show up"; the key is there, with the right value, either way.
+    /// The `Slice` case proves this isn't just "the default happens to
+    /// show up" — the key is explicit either way.
     #[test]
     fn job_always_serializes_scatter_rim_explicitly() {
         let base = BaseCutJob {
@@ -549,12 +503,8 @@ mod tests {
         assert_eq!(json["scatter_rim"], "slice");
     }
 
-    /// Protocol hygiene, not file-vintage support (see the field's own doc
-    /// comment): a JSON blob that omits `scatter_rim` entirely — Rust never
-    /// produces one, but nothing stops a hand-built test fixture or a
-    /// hand-edited job file from doing so — still deserializes, defaulting
-    /// to `Keep`. This is the DESERIALIZE side only; the serialize side is
-    /// pinned separately above.
+    /// Deserialize-only: Rust never produces JSON missing this key, but a
+    /// hand-edited job file or test fixture might.
     #[test]
     fn scatter_rim_omitted_from_json_deserializes_to_keep() {
         let json = serde_json::json!({
@@ -581,12 +531,8 @@ mod tests {
         assert_eq!(serde_json::to_value(&job).unwrap()["scatter_rim"], "slice");
     }
 
-    /// Pinned interface: `BaseCutJob.topper_mm` serializes verbatim as the
-    /// key `topper_mm` (no rename), and round-trips through the same
-    /// job_json_with_cut_footprints path a normal job takes — topper mode
-    /// still gets the derived "cut" footprint injected per placement (the
-    /// cut footprint stays the TOP face in topper mode too, see
-    /// docs/BASECUTTER.md's BaseCutJob.topper_mm note).
+    /// topper_mm still gets the derived "cut" footprint injected per
+    /// placement via job_json_with_cut_footprints, same as a normal job.
     #[test]
     fn job_with_topper_mm_serializes_the_key() {
         let job = BaseCutJob {
@@ -630,12 +576,10 @@ mod tests {
         assert_eq!(job.topper_mm, None);
     }
 
-    /// The wire JSON (what actually reaches base_cut.py, via
-    /// job_json_with_cut_footprints/write_job_file) carries a "cut" key per
-    /// placement — the derived top-face footprint — so Rust stays the one
-    /// owner of the nominal->cut derivation instead of the script
-    /// re-deriving it. 32mm circle + default plinth -> 30.017mm (see
-    /// cutters::top_face_of_circle_matches_measured_taper for the math).
+    /// The wire JSON carries a "cut" key per placement — the derived
+    /// top-face footprint — so Rust stays the one owner of the
+    /// nominal->cut derivation. 32mm circle + default plinth -> 30.017mm
+    /// (see cutters::top_face_of_circle_matches_measured_taper for the math).
     #[test]
     fn wire_json_carries_the_derived_cut_footprint() {
         let job = BaseCutJob {
@@ -901,9 +845,7 @@ mod tests {
         assert_eq!(value["placements"][0]["cut"]["kind"], "circle");
         assert!(value["placements"][0]["cut"]["diameter_mm"].as_f64().unwrap() < 32.0);
         // scatter_rim flows into the file Blender reads verbatim, as a
-        // plain lowercase string — same ground-truth pin as
-        // job_always_serializes_scatter_rim_explicitly, exercised here
-        // through the actual write_job_file path.
+        // plain lowercase string.
         assert_eq!(value["scatter_rim"], "keep");
         std::fs::remove_dir_all(&dir).ok();
     }
