@@ -6,12 +6,12 @@
 //! scan restores the packed curation via the model.json sidecars.
 //!
 //! Because the import writes the manifest into the release dir, a SECOND
-//! import of the same release becomes an UPDATE: `inspect_package` diffs the
-//! incoming component checksums against the local manifest so the UI can
-//! offer only what changed, and `import_release` re-extracts just the
-//! selected components — moving locally edited files aside instead of
-//! truncating them (the same contract unpack_model honors) and deleting
-//! files the new version dropped.
+//! import of the same release becomes an UPDATE: `inspect_package` diffs
+//! the incoming component checksums against the local manifest, and
+//! `import_release` re-extracts just the selected components — moving
+//! locally edited files aside instead of truncating them (the same
+//! contract unpack_model honors) and deleting files the new version
+//! dropped.
 
 use crate::catalog::layout;
 use crate::catalog::pack::{edited_aside_path, PACK_SIDECAR_NAME};
@@ -124,25 +124,15 @@ fn read_local_manifest(dest: &Path) -> Option<Manifest> {
 /// A manifest-relative name that stays inside its component dir. Hostile
 /// names read as None and are ignored wholesale: `is_absolute()` catches
 /// POSIX-absolute and `C:\x`, `ParentDir` catches `../x`, and `Prefix`
-/// catches the forms `is_absolute()` misses on Windows — a drive-relative
-/// `C:foo` (no leading slash, still resolves against drive C's cwd) or a
-/// `\\?\`/UNC path. `PathBuf::join` treats any component carrying a `Prefix`
-/// as a full replacement of the base, not an append, so letting one through
-/// here would silently retarget the whole destination.
+/// catches what `is_absolute()` misses on Windows — a drive-relative
+/// `C:foo` or a `\\?\`/UNC path. `PathBuf::join` treats any `Prefix`
+/// component as a full replacement of the base, not an append, so letting
+/// one through would silently retarget the whole destination.
 ///
-/// `Component::Prefix` is only ever produced by the platform path parser
-/// when the *build* targets Windows — on a non-Windows host (our CI, most
-/// contributors' machines) `Path::new("C:evil.stl")` parses to a single
-/// harmless-looking `Normal` component, so the manifest's userbase being
-/// mostly Windows doesn't mean the binary that validates it is. The drive
-/// prefix and any backslash (the Windows separator, otherwise just an
-/// ordinary — and suspicious, since our own writer never emits one — byte
-/// on POSIX) are therefore also checked textually so the guard holds no
-/// matter which OS built it.
-///
-/// `pub(crate)` so `manifest::extract_component_archive` — which faces the
-/// same attacker-authored manifest names — shares this one rule instead of
-/// re-deriving it.
+/// `Component::Prefix` only appears when the *build* targets Windows — on
+/// a non-Windows host, `Path::new("C:evil.stl")` parses as a harmless
+/// `Normal` component, so the drive prefix and any backslash are also
+/// checked textually, so the guard holds no matter which OS built it.
 pub(crate) fn safe_relative(name: &str) -> Option<&Path> {
     let bytes = name.as_bytes();
     let has_drive_prefix =
@@ -553,9 +543,6 @@ mod tests {
         .unwrap();
     }
 
-    /// safe_relative is the guard both extract_component_archive (via
-    /// manifest names) and inspect_package/import_release (via
-    /// component.archive) rely on — pin its rule directly.
     #[test]
     fn safe_relative_rejects_traversal_absolute_and_drive_relative_names() {
         assert!(safe_relative("variant_b/base.stl").is_some(), "legit subdir kept");

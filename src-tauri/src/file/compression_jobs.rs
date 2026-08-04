@@ -157,14 +157,12 @@ pub async fn perform_compression(
     )
     .await?;
 
-    // Check if cancelled before cleanup
     if cancel_token.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(AppError::UserCancelled(
             "Compression was cancelled by user".into(),
         ));
     }
 
-    // Cleanup original files
     fs::remove_dir_all(&release_dir_path)
         .map_err(|e| AppError::IoError(format!("Failed to clean up release directory: {}", e)))?;
 
@@ -272,7 +270,6 @@ fn spawn_compression_task(
     cancel_token: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<Result<Vec<compressors::ArchiveFileEntry>, AppError>> {
     tokio::spawn(async move {
-        // Acquire a permit from the semaphore
         let _permit = semaphore
             .acquire()
             .await
