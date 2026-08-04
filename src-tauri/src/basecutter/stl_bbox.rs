@@ -1,25 +1,13 @@
-//! A tiny, pure binary-STL bounding-box reader — no Blender. Used by
-//! `scatter_assets::scan_scatter_library` to measure a user-library piece's
-//! footprint/height without spawning a headless Blender process just to read
-//! six numbers (docs/SCATTER.md "User library": "parses each binary STL
-//! header/triangles in Rust for bbox dims"). Deliberately narrow: it reads
-//! only the vertex coordinates needed for a bounding box, not a full mesh
-//! (no face/normal validation, no manifoldness check — that's Blender's job
-//! at scatter/cut time, this is a cheap pre-scan measurement only).
+//! A tiny, pure binary-STL bounding-box reader — no Blender, no full mesh
+//! parse. Reads only the vertex coordinates needed for a bounding box: an
+//! 80-byte header (ignored), a little-endian u32 triangle count, then that
+//! many 50-byte records (12 bytes normal + 3x12 bytes vertex + 2 bytes
+//! attribute byte count, all little-endian f32/u16).
 //!
-//! Binary STL layout (the format every mesh this app writes/reads uses —
-//! see base_cut.py's "no legacy operator fallback" for the same floor
-//! applied to the Blender side): an 80-byte header (ignored), a
-//! little-endian u32 triangle count, then that many 50-byte records (12
-//! bytes normal + 3x12 bytes vertex + 2 bytes attribute byte count, all
-//! little-endian f32/u16). ASCII STL ("solid ... facet normal ...") is
-//! deliberately NOT supported here: it has no fixed record size to bound
-//! the read against, and every STL this app itself ever exports
-//! (render_mini.py/base_cut.py/gen_landscape.py/scatter_landscape.py) uses
-//! `wm.stl_export`'s binary output — an ASCII file showing up in a scatter
-//! library folder is already an out-of-band asset this pass doesn't
-//! attempt to support, so it's treated the same as any other unparseable
-//! file (see `ScatterAsset.warning`).
+//! ASCII STL is deliberately NOT supported: it has no fixed record size to
+//! bound the read against, and every STL this app itself exports is
+//! binary — an ASCII file here is already an out-of-band asset, rejected
+//! the same as any other unparseable file.
 
 /// A bounding box in the STL's own coordinate space (mm, by this app's
 /// universal convention — see scatter_landscape.py's module docstring).
@@ -30,22 +18,16 @@ pub struct StlBBox {
 }
 
 impl StlBBox {
-    /// The planar footprint this app's scatter/base-cut tooling cares
-    /// about: the LARGER of the X/Y extents, matching how
-    /// docs/SCATTER-ASSETS.md's own curation manifest records a single
-    /// "picked" footprint size per piece (verified against manifest.json:
-    /// every entry's recorded footprint_mm equals `max(x, y)` of its
-    /// measured bbox — see `scatter_assets`'s manifest-drift test) rather
-    /// than reporting a separate width/depth pair the pinned
-    /// `ScatterAsset.footprint_mm: f64` shape has no room for.
+    /// The planar footprint: the LARGER of the X/Y extents, matching the
+    /// single `footprint_mm: f64` field the curation manifest records per
+    /// piece (no separate width/depth pair).
     pub fn footprint_mm(&self) -> f64 {
         let dx = (self.max.0 - self.min.0) as f64;
         let dy = (self.max.1 - self.min.1) as f64;
         dx.max(dy)
     }
 
-    /// Z extent — this app's universal Z-up convention (scatter_landscape.py,
-    /// gen_landscape.py, base_cut.py all share it), so height is always the
+    /// Z extent — this app's Z-up convention, so height is always the
     /// bbox's Z span regardless of how the piece is centered/floored.
     pub fn height_mm(&self) -> f64 {
         (self.max.2 - self.min.2) as f64

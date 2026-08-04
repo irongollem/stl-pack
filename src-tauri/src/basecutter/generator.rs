@@ -1,12 +1,10 @@
 //! Parametric landscape generator — see docs/BASECUTTER.md "The landscape
-//! generator (phase 6)". Mirrors job.rs's shape (embedded script, job JSON
-//! file, run_blender_lines harness, single-job guard, typed events) but for
-//! a single-shot bake instead of an N-cut batch: one Blender launch produces
-//! one heightfield STL, deterministic from a seed.
+//! generator (phase 6)". A single-shot bake, not an N-cut batch: one
+//! Blender launch produces one heightfield STL, deterministic from a seed.
 //!
 //! PRESETS LIVE HERE, NOT IN THE SCRIPT: gen_landscape.py only knows
-//! parameters (docs/BASECUTTER.md again) — a new preset is a new row in
-//! `get_landscape_presets`, never a script change.
+//! parameters — a new preset is a new row in `get_landscape_presets`,
+//! never a script change.
 
 use crate::error::AppError;
 use crate::models::BlenderInfo;
@@ -25,9 +23,8 @@ use tauri_specta::Event;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-/// The Blender script ships INSIDE the binary — same always-overwrite
-/// materialization as base_cut.py/render_mini.py (see
-/// engine::materialize_embedded_script for the stale-copy trap this avoids).
+/// The Blender script ships INSIDE the binary (see
+/// engine::materialize_embedded_script for the always-overwrite rationale).
 const GEN_LANDSCAPE_SCRIPT: &str = include_str!("../../resources/gen_landscape.py");
 
 /// Grid step floor — 0.1mm is resin-grade lateral detail (the userbase
@@ -334,54 +331,27 @@ pub struct GeneratorPreset {
 
 /// The four seed presets (docs/BASECUTTER.md phase 6), tuned for a
 /// 120x80mm plate by actually running gen_landscape.py and eyeballing the
-/// bake (see the phase's verification renders) — not just numbers that
-/// happened to compile.
+/// bake — not just numbers that happened to compile.
 ///
-/// - **cobblestone-street**: stones (4mm cells / 0.5mm mortar — at ~1:56
-///   that's a 22cm cobble; sized against a cut 25mm base, not the bare
-///   plate) + camber (the street crown) + a little base noise so the
-///   plate isn't perfectly flat between stones. Baked at 0.4mm grid so
-///   the joints resolve.
+/// - **cobblestone-street**: stones (4mm cells / 0.5mm mortar) + camber
+///   (the street crown) + a little base noise so the plate isn't
+///   perfectly flat between stones. Baked at 0.4mm grid so the joints
+///   resolve.
 /// - **sandy**: directional ripples (windswept dune ridges) over soft,
 ///   low-amplitude rolling noise (the dune body itself).
 /// - **rocky**: ridged noise (fine jagged detail) + a handful of chunky
-///   boulders. The noise amount is kept LOW (0.18) and its scale HIGH
-///   (0.1, i.e. small/fine features) relative to the boulders (amount 1.0,
-///   14-30mm) — an earlier tuning pass at noise amount 0.35/scale 0.15 (a
-///   similar wavelength to the boulders themselves) visually swamped the
-///   boulder shapes into the noise texture; separating the two features by
-///   both amplitude AND frequency is what made the boulders read as
-///   boulders again (see the phase's verification renders).
+///   boulders, kept at much lower amplitude and higher frequency than the
+///   boulders (0.18/0.1 vs. the boulders' 1.0/14-30mm) so the two
+///   features read as distinct rather than the noise swamping the
+///   boulder shapes.
 /// - **lava-flow**: the flow channel field + a light ridged-noise crust so
 ///   the banks aren't perfectly smooth.
-/// - **forest-floor**: bare dirt under trees, not a heightfield showpiece —
-///   it exists to be SCATTERED onto (the Forest ground scatter preset drops
-///   leaf litter/twigs/mushrooms on top), so the terrain itself stays quiet.
-///   ONE noise layer, no other layer enabled: `scale: 0.045` (~22mm
-///   wavelength) is octave 1 — the gentle rolling undulation, about the
-///   size of a mini's own base, so a 30-40mm close-up sees one soft rise/
-///   fall, not a flat plain. `octaves: 5` piles progressively finer/weaker
-///   components on the SAME layer (lacunarity 2.0/persistence 0.5 are
-///   fixed in `_fractal`), landing at ~11.1/5.6/2.8/1.4mm — the earthy
-///   surface grain, for free, off the one layer, no second layer or new
-///   param needed. First tuning pass used scale 0.02/octaves 5 (~50mm
-///   base, ~1.6mm finest octave): the real-Blender bake was readable
-///   top-down but a 30mm raking close-up came back nearly flat — a
-///   scanline diagnostic on the baked heights showed the fine octaves'
-///   *combined* weight is fixed by octave count/persistence regardless of
-///   `scale` (~22% for octaves 3-5 either way), but at a 50mm base
-///   wavelength that 22% is spread thin over a much bigger close-up
-///   footprint; shrinking the base wavelength to ~22mm concentrates the
-///   same relative grain into a close-up-sized area, which is what
-///   actually reads as texture at 30-40mm (see the phase's verification
-///   renders). `ridged: false` because dirt isn't sharp ridges.
-///   `relief_mm: 3.5` sits between cobblestone's 1.6 subtle-texture and
-///   sandy's 4.0 dune body — "a few mm", not dunes. `resolution_mm: 0.4`
-///   (same as cobblestone/lava) resolves the ~1.4mm finest octave with a
-///   few samples per wavelength; verts stay in the tens of thousands,
-///   nowhere near MAX_GRID_VERTS. Camber is left off — this is soil, not
-///   a crowned street; the noise alone already keeps it from reading dead
-///   flat.
+/// - **forest-floor**: bare dirt under trees, not a heightfield showpiece
+///   — it exists to be SCATTERED onto, so the terrain itself stays quiet.
+///   One noise layer at `scale: 0.045` (~22mm wavelength, about a mini's
+///   base) with `octaves: 5` for the earthy surface grain off that one
+///   layer. `ridged: false` (dirt isn't sharp ridges); `relief_mm: 3.5`
+///   sits between cobblestone's subtle texture and sandy's dune body.
 pub fn seed_presets() -> Vec<GeneratorPreset> {
     vec![
         GeneratorPreset {
@@ -655,8 +625,8 @@ pub enum LandscapeToken {
     },
     Generated {
         out: String,
-        /// The GLB twin's path (design doc convention 4). `Option` so the
-        /// parser stays tolerant of a params/script mismatch across an
+        /// The GLB twin's path. `Option` so the parser stays tolerant of
+        /// a params/script mismatch across an
         /// upgrade window — never observed from THIS script version, which
         /// always reports it, but the wire format shouldn't hard-fail on a
         /// missing key it doesn't strictly need to function.
@@ -1251,9 +1221,6 @@ mod tests {
         }
     }
 
-    // ---- validate_preset_id (IPC is the trust boundary: preset_id lands
-    // in `out_dir.join(...)`, so an attacker-chosen id must not escape it) ----
-
     #[test]
     fn validate_preset_id_accepts_none_and_known_ids() {
         assert!(validate_preset_id(None).is_ok());
@@ -1472,13 +1439,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ------------------------------------------------------- integration --
-
-    /// End-to-end: bake every seed preset for real through
-    /// spawn_and_parse (NOT the tauri command layer), assert each comes
-    /// back GENERATED + manifold, and print dims/verts so a human can
-    /// sanity-check the numbers alongside the rendered PNGs from the
-    /// phase's verification step.
+    /// End-to-end: bake every seed preset for real through spawn_and_parse
+    /// (NOT the tauri command layer), assert each comes back GENERATED +
+    /// manifold, and print dims/verts so a human can sanity-check them.
     ///
     /// Run with: cargo test -- --ignored bakes_every_seed_preset
     #[tokio::test]

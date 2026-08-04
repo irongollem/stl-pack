@@ -15,8 +15,7 @@ use tauri_specta::Event;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-// pub(crate): batch renders register here too, so the one cancel_render
-// command serves both the studio and the batch job.
+// pub(crate): batch renders register here too, so one registry serves both.
 pub(crate) static ACTIVE_RENDERS: Lazy<Mutex<HashMap<String, Arc<Notify>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -338,10 +337,9 @@ async fn run_render_job(
     }
 }
 
-/// Map the shared harness's error into run_blender's exact pre-refactor
-/// error texts. `AbortedByCaller` never happens here (the `on_line` closure
-/// below never returns `Break`) — kept in the match only because
-/// `BlenderRunError` must be matched exhaustively.
+/// `AbortedByCaller` never happens here (the `on_line` closure below never
+/// returns `Break`) — kept in the match only because `BlenderRunError`
+/// must be matched exhaustively.
 fn map_run_error(e: engine::BlenderRunError) -> AppError {
     use engine::BlenderRunError::*;
     match e {

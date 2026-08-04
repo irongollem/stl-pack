@@ -224,8 +224,7 @@ mod tests {
     use super::*;
 
     /// The .3pk carries release-level metadata, previews in EVERY builder
-    /// image format (a .jpg cover used to be silently left out), and the
-    /// licence — while bulky extras stay zip-only.
+    /// image format, and the licence — while bulky extras stay zip-only.
     #[test]
     fn routes_metadata_images_and_licence_into_the_3pk() {
         for name in [

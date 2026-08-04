@@ -1,11 +1,8 @@
-//! Targeted model.json enrichment for machine-derived render metadata.
-//!
-//! The normalizer's write_leaf_json is THE authoritative sidecar writer —
-//! this module deliberately does less: it merges measured geometry and the
-//! rendered rotation into a sidecar that ALREADY exists, and refuses to
-//! create one. A synthetic model.json would flip the folder from heuristic
-//! to sidecar authority (the scanner treats its presence as "curated"),
-//! which is the normalizer's call to make, not the render pipeline's.
+//! Targeted model.json enrichment for machine-derived render metadata:
+//! merges measured geometry and the rendered rotation into a sidecar that
+//! ALREADY exists, and refuses to create one — a synthetic model.json
+//! would flip the folder from heuristic to sidecar authority, which isn't
+//! this module's call to make.
 
 use crate::error::AppError;
 use std::fs;

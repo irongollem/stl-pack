@@ -9,11 +9,9 @@ pub fn clean_name(name: &str) -> String {
 }
 
 /// First non-existing sibling of `path`: "cut.stl" -> "cut-1.stl" ->
-/// "cut-2.stl" ... (or "cut" -> "cut-1" with no extension at all). Shared by
-/// render/commands.rs (render outputs, always .png) and
-/// basecutter/commands.rs::export_cuts (catalog exports, always .stl) so a
-/// re-run into an already-populated destination never clobbers an earlier
-/// file — it gets a -N suffix instead.
+/// "cut-2.stl" ... (or "cut" -> "cut-1" with no extension at all). A
+/// re-run into an already-populated destination never clobbers an
+/// earlier file — it gets a -N suffix instead.
 pub(crate) fn unique_path(path: PathBuf) -> PathBuf {
     if !path.exists() {
         return path;

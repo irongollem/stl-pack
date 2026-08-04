@@ -1,7 +1,7 @@
 //! Cutter data model — see docs/BASECUTTER.md "Cutters are data, not code"
 //! and "The plinth". This module owns the shapes, the seed library, and the
-//! nominal->cut derivation; `base_cut.py` and the viewport overlay both
-//! consume it, so nothing here may assume the `CutterKind` list stays closed.
+//! nominal->cut derivation. Nothing here may assume the `CutterKind` list
+//! stays closed — it's meant to grow.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -92,12 +92,8 @@ pub struct Cutter {
 /// The single owner of the nominal->cut derivation (docs/BASECUTTER.md "The
 /// plinth"): a real base is widest at the table and slopes inward going up,
 /// so the cut footprint (the plug's top face) is smaller than the nominal
-/// size by twice the taper inset. `base_cut.py`, the viewport overlay, and
-/// any future render-tool consumer must all compute this the same way —
-/// hence one function instead of three copies of the same formula.
-/// Called by `job::write_job_file` (injects the "cut" key base_cut.py
-/// consumes) and `commands::validate_placements` (the too-small-footprint
-/// guard) — no longer test-only.
+/// size by twice the taper inset. One function, not several copies of the
+/// same formula, so every consumer computes it identically.
 pub fn top_face_of(kind: &CutterKind, plinth: &PlinthParams) -> CutterKind {
     let inset = plinth.height_mm * plinth.taper_deg.to_radians().tan();
     let shrink = 2.0 * inset;

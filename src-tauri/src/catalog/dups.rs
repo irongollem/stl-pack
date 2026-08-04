@@ -32,18 +32,14 @@ pub fn file_identity(path: &Path) -> Option<String> {
     })
 }
 
-/// Staged duplicate detection:
-/// 1. same-size candidates come free from the index,
-/// 2. partial (first 128 KiB) BLAKE3 hashes weed out most collisions,
-/// 3. full-file hashes confirm — and are persisted so re-runs are cheap.
+/// Staged duplicate detection: same-size candidates come from the index,
+/// partial (first 128 KiB) BLAKE3 hashes weed out most collisions, then
+/// full-file hashes confirm and are persisted so re-runs are cheap.
 ///
 /// Every candidate's physical identity is refreshed along the way (a stat,
-/// nearly free next to hashing): merges and external file swaps change
-/// identity without touching content, so a stale value would misreport
-/// what's reclaimable.
-///
-/// Stage 3's full `.stl` reads double as geometry mining — one pass over
-/// the same bytes — which is what `edge_cap` is for.
+/// nearly free next to hashing) since merges and external swaps can change
+/// identity without touching content. Stage 3's full `.stl` reads double as
+/// geometry mining — one pass over the same bytes, capped by `edge_cap`.
 pub fn find_duplicates(
     conn: &Connection,
     cancel: &AtomicBool,
@@ -124,12 +120,11 @@ pub fn find_duplicates(
 }
 
 /// Replace each duplicate path with a hardlink to `keep`, so every name
-/// shares one physical copy and the difference is reclaimed. Contents are
-/// re-verified byte-for-byte right before each replacement: the catalog's
-/// hashes date from the last scan, and replacing a file that has since
-/// diverged would destroy data. The swap itself is link-to-hidden-temp then
-/// rename, so no path ever observes a missing file — a crash leaves at worst
-/// a dot-file the scanner ignores. Returns merged paths + per-file errors.
+/// shares one physical copy. Contents are re-verified byte-for-byte right
+/// before each replacement — the catalog's hashes date from the last scan,
+/// and replacing a diverged file would destroy data. The swap is
+/// link-to-hidden-temp then rename, so no path ever observes a missing
+/// file. Returns merged paths + per-file errors.
 pub fn merge_duplicates(
     keep: &Path,
     duplicates: &[String],

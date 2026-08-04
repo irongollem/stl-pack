@@ -11,44 +11,27 @@ use crate::error::AppError;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
-// ------------------------------------------------------------- bundled set
-
 /// One curated bundled asset, transcribed from
-/// `resources/scatter/manifest.json` (the S4a curation output — see
-/// docs/SCATTER-ASSETS.md "Curation verdict"). `footprint_mm` is
-/// `max(canonical.footprint_mm.x, canonical.footprint_mm.y)` from that
-/// manifest, matching `stl_bbox::StlBBox::footprint_mm`'s "larger of X/Y"
-/// convention — the manifest-drift test below re-parses the actual
-/// manifest.json shipped in resources/scatter/ (not this table's own
-/// values) and asserts every field here still matches it byte-for-byte, so
-/// this table can never silently drift from the manifest the curation pass
-/// actually produced.
+/// `resources/scatter/manifest.json` (see docs/SCATTER-ASSETS.md
+/// "Curation verdict"). `footprint_mm` is `max(x, y)` of the manifest's
+/// canonical footprint, matching `StlBBox::footprint_mm`'s convention —
+/// the manifest-drift test below asserts this table matches the shipped
+/// manifest.json byte-for-byte.
 struct BundledAsset {
     id: &'static str,
     label: &'static str,
     filename: &'static str,
     footprint_mm: f64,
     height_mm: f64,
-    // Read by the manifest-drift test (every row's license is checked
-    // against manifest.json and asserted to be an allowed license — CC0, or
-    // CC BY-SA 4.0 for the leaf set) and kept here
-    // as the per-piece provenance record — not yet surfaced through any
-    // command (get_scatter_credits below covers the whole-bundle credits
-    // panel; a future per-asset license display would read this field).
+    // Per-piece provenance, checked against manifest.json by the
+    // manifest-drift test; not yet surfaced through any command.
     #[allow(dead_code)]
     license: &'static str,
-    // VTT GLB export design doc "Scatter": a muted, tabletop-realistic
-    // sRGB hex a placed instance of this asset paints its "Col" corner
-    // attribute with (scatter_landscape.py's `piece_asset_color`), before
-    // that per-piece ±6% brightness jitter. Picked per actual asset id
-    // (bone/skull tones for the Smithsonian skeletal scans, a cap-brown for
-    // the mushroom, greens/browns for the leaf litter, wood tones for the
-    // Poly Haven branch/log scans) rather than one flat color for the whole
-    // table — see this module's manifest-drift tests for why the table
-    // can't silently drift from what's actually shipped; color isn't in
-    // manifest.json and so isn't drift-checked the same way, but every
-    // entry IS checked non-empty and `#rrggbb`-shaped in this file's own
-    // tests.
+    // A muted, tabletop-realistic sRGB hex a placed instance paints its
+    // "Col" corner attribute with, before per-piece brightness jitter.
+    // Picked per asset id, not one flat color for the whole table — not
+    // in manifest.json, so not drift-checked against it, but checked
+    // non-empty and `#rrggbb`-shaped by this file's own tests.
     color: &'static str,
     bytes: &'static [u8],
 }
@@ -57,10 +40,9 @@ const SMITHSONIAN_LICENSE: &str =
     "CC0 1.0 (Smithsonian Open Access, machine-tagged \"metadata_usage.access\": \"CC0\")";
 
 // The one non-CC0 admission in the bundle: the Printables organic-leaf set.
-// CC BY-SA carries a share-alike obligation that CC0 does not (a base a user
-// decorates with these inherits the license); it is admitted deliberately —
-// see docs/SCATTER-ASSETS.md and the license allowlist in
-// `bundled_assets_manifold_and_license_allowed_per_manifest`.
+// CC BY-SA carries a share-alike obligation that CC0 does not (a base a
+// user decorates with these inherits the license); admitted deliberately
+// — see docs/SCATTER-ASSETS.md.
 const LEAF_LICENSE: &str = "CC BY-SA 4.0 (Printables)";
 
 /// The bundled set — see this module's doc comment and `BundledAsset`'s.
@@ -245,10 +227,10 @@ const BUNDLED_ASSETS: &[BundledAsset] = &[
 ];
 
 /// The curated manifest, embedded verbatim for the drift test below —
-/// deliberately NOT read from `resources/scatter/manifest.json` at runtime
-/// by anything else (the task's "single source, drift-proof" call: the
-/// manifest lives in the repo for provenance/the drift test only, the
-/// BUNDLED_ASSETS table above is what the app actually serves).
+/// deliberately NOT read from `resources/scatter/manifest.json` at
+/// runtime by anything else. The manifest lives in the repo for
+/// provenance/the drift test only; BUNDLED_ASSETS above is what the app
+/// actually serves.
 #[cfg(test)]
 const MANIFEST_JSON: &str = include_str!("../../resources/scatter/manifest.json");
 
@@ -278,12 +260,10 @@ pub(crate) fn bundled_asset_bytes_for_test(id: &str) -> Option<&'static [u8]> {
     bundled_asset_by_id(id).map(|a| a.bytes)
 }
 
-/// Materialize and return every bundled asset — the S4 half of
-/// `get_scatter_assets` (docs/SCATTER.md "Bundled assets"). Lazily
-/// materializes each STL under `scatter/<filename>` in the app cache dir on
-/// every call, same always-overwrite discipline as the embedded scripts
-/// (`render::engine::materialize_embedded_asset`) — a stale on-disk copy
-/// can never survive a rebuild.
+/// Materialize and return every bundled asset (docs/SCATTER.md "Bundled
+/// assets"). Lazily materializes each STL under `scatter/<filename>` in
+/// the app cache dir on every call, same always-overwrite discipline as
+/// the embedded scripts (`render::engine::materialize_embedded_asset`).
 pub fn get_bundled_assets(app_handle: &AppHandle) -> Result<Vec<ScatterAsset>, AppError> {
     BUNDLED_ASSETS
         .iter()
@@ -307,16 +287,11 @@ pub fn get_bundled_assets(app_handle: &AppHandle) -> Result<Vec<ScatterAsset>, A
         .collect()
 }
 
-// -------------------------------------------------------- asset resolution
-
-/// Neutral fallback for every user-library asset (VTT GLB export design doc
-/// "Scatter": "User-library (non-bundled) assets default to '#9a9a9a'") —
-/// no curation pass has looked at a user's own folder, so there's no
-/// per-piece color to pick the way `BUNDLED_ASSETS` does; also
-/// `scatter_landscape.py`'s own `DEFAULT_ASSET_COLOR` fallback for a piece
-/// with no `asset_colors` entry at all, kept in sync by inspection (each
-/// side owns its own copy — see that script's module docstring's "Colors"
-/// section for why the two scripts can't share a literal import).
+/// Neutral fallback for every user-library asset — no curation pass has
+/// looked at a user's own folder, so there's no per-piece color to pick
+/// the way `BUNDLED_ASSETS` does. Mirrors scatter_landscape.py's own
+/// `DEFAULT_ASSET_COLOR`, kept in sync by inspection (each side owns its
+/// own copy — no shared import between Rust and Python).
 const DEFAULT_USER_ASSET_COLOR: &str = "#9a9a9a";
 
 /// The color a placed instance of asset `id` should paint with — the
@@ -335,11 +310,11 @@ pub fn resolve_asset_color(id: &str) -> String {
 
 /// Resolve one `Asset { id }` piece to an absolute file path — bundled
 /// first, then the configured user-library folder — for injection into a
-/// scatter job's `asset_paths` (docs/SCATTER.md's "Asset source" pinning:
-/// "the script NEVER guesses paths"). Returns `NotFoundError` for an
-/// unknown id or a user-library id whose file no longer exists, so
-/// `start_scatter` fails clearly BEFORE spawning Blender rather than
-/// forwarding a dangling id into the job JSON.
+/// scatter job's `asset_paths` (see docs/SCATTER.md "Asset source").
+/// Returns `NotFoundError` for an unknown id or a user-library id whose
+/// file no longer exists, so `start_scatter` fails clearly BEFORE
+/// spawning Blender rather than forwarding a dangling id into the job
+/// JSON.
 pub fn resolve_asset_path(app_handle: &AppHandle, id: &str) -> Result<PathBuf, AppError> {
     if let Some(asset) = bundled_asset_by_id(id) {
         return crate::render::engine::materialize_embedded_asset(
@@ -393,20 +368,14 @@ fn has_stl_extension(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("stl"))
 }
 
-// ----------------------------------------------------------- user library
-
-/// A scatter piece is not a mini (docs/SCATTER.md "Scale anchor"): a
-/// user-library STL whose measured footprint clears this many millimetres
-/// (at the app's default scale_factor of 1.0 — the scan has no per-piece
-/// scale_factor to apply, it measures the file as-is) is flagged, not
-/// blocked. Chosen well above the bundled set's own largest legitimate
-/// piece (the whale-mandible "statement piece" at 16mm, docs/SCATTER-ASSETS.md
-/// "size_reasoning") and comfortably below a typical 28-32mm-heroic
-/// miniature's own footprint (a round base alone starts at 25mm across) —
-/// leaving headroom on both sides so neither the biggest legitimate scatter
-/// piece nor a merely-large-for-its-kind one (a big rock, a stag skull with
-/// antlers) false-positives, while an actual mini dropped in the folder by
-/// habit reliably clears it.
+/// A scatter piece is not a mini: a user-library STL whose measured
+/// footprint clears this many millimetres is flagged, not blocked. Chosen
+/// well above the bundled set's own largest legitimate piece (the
+/// whale-mandible "statement piece" at 16mm) and comfortably below a
+/// typical 28-32mm-heroic miniature's footprint (a round base alone
+/// starts at 25mm) — headroom on both sides so neither the biggest
+/// legitimate scatter piece nor a big rock/skull false-positives, while
+/// an actual mini dropped in the folder by habit reliably clears it.
 const MINI_FOOTPRINT_WARNING_MM: f64 = 40.0;
 
 fn mini_footprint_warning(footprint_mm: f64) -> Option<String> {
@@ -519,15 +488,11 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    // -------------------------------------------------- manifest drift --
-
-    /// The drift-proof pin the task calls for: re-parse the ACTUAL
-    /// manifest.json shipped in resources/scatter/ (not a copy of these
-    /// numbers) and assert BUNDLED_ASSETS matches it field-for-field,
-    /// footprint_mm computed the same `max(x, y)` way as
-    /// `stl_bbox::StlBBox::footprint_mm`. A future curation change that
-    /// updates manifest.json without updating this table fails this test
-    /// instead of silently shipping a stale const.
+    /// Re-parse the ACTUAL manifest.json shipped in resources/scatter/
+    /// (not a copy of these numbers) and assert BUNDLED_ASSETS matches it
+    /// field-for-field. A future curation change that updates
+    /// manifest.json without updating this table fails this test instead
+    /// of silently shipping a stale const.
     #[test]
     fn bundled_assets_table_matches_the_shipped_manifest() {
         let manifest: Value = serde_json::from_str(MANIFEST_JSON).expect("manifest.json parses");
@@ -603,12 +568,9 @@ mod tests {
         }
     }
 
-    // ----------------------------------------------------------- colors --
-
-    /// VTT GLB export design doc "Scatter": every bundled asset must carry
-    /// a real `#rrggbb` color — a missing/malformed entry would silently
-    /// paint a piece black or crash `scatter_landscape.py`'s
-    /// `_hex_to_rgb01` on a bad hex string.
+    /// Every bundled asset must carry a real `#rrggbb` color — a
+    /// missing/malformed entry would silently paint a piece black or
+    /// crash scatter_landscape.py's `_hex_to_rgb01` on a bad hex string.
     #[test]
     fn every_bundled_asset_has_a_well_formed_hex_color() {
         for asset in BUNDLED_ASSETS {
@@ -655,17 +617,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ------------------------------------------------------- resolution --
-
-    /// `resolve_asset_path`'s bundled branch needs a real `AppHandle` (it
-    /// materializes bytes to the app cache dir) and so isn't unit-tested
-    /// directly — same "AppHandle-dependent wrapper stays untested at the
-    /// unit level" split the rest of this module follows (see
-    /// `find_stl_by_stem`, which IS the pure logic its user-library
-    /// fallback branch delegates to, and IS covered below). The bundled
-    /// branch is exercised for real by the ignored end-to-end scatter test
-    /// in scatter.rs, which writes a bundled asset's bytes to a temp file
-    /// and threads it through `asset_paths` exactly as production would.
+    /// `resolve_asset_path`'s bundled branch needs a real `AppHandle`, so
+    /// it isn't unit-tested directly; `find_stl_by_stem` is the pure logic
+    /// its user-library fallback delegates to, and is covered here.
     #[test]
     fn find_stl_by_stem_is_non_recursive_and_extension_gated() {
         let dir = std::env::temp_dir().join(format!("stlpack_scatter_findstem_{}", std::process::id()));
@@ -682,13 +636,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ------------------------------------------------------------- scan --
-
     /// Hand-builds a tiny well-formed binary STL, same recipe as
-    /// stl_bbox's own test helper (kept local rather than shared — see
-    /// scatter_landscape.py's test-fixture convention in scatter.rs for the
-    /// same "each embedded-script/module test suite builds its own
-    /// throwaway fixture" reasoning).
+    /// stl_bbox's own test helper (kept local rather than shared).
     fn build_binary_stl(triangles: &[[(f32, f32, f32); 3]]) -> Vec<u8> {
         let mut bytes = vec![0u8; 80];
         bytes.extend_from_slice(&(triangles.len() as u32).to_le_bytes());

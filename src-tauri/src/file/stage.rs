@@ -1,8 +1,5 @@
 //! Canonical staging for the release builder — the drift-prevention half of
-//! the normalizer plan. The builder used to stage `[group/]model/` with
-//! lowercase heuristic subfolders (`supported/`, `chitubox/`, `lychee/`),
-//! so every release built in Plinth needed a cleanup pass the moment it was
-//! imported into a library. Staging now emits the same shape the normalizer
+//! the normalizer plan. Staging emits the same shape the normalizer
 //! converges on — `Model/Supported|Unsupported[/Variant]` with an
 //! authoritative model.json in every leaf — so a packed release imports
 //! already-normal: a scan + plan() after import finds nothing to move.

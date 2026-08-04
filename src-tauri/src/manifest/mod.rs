@@ -1,9 +1,4 @@
 //! The `.3pk` release manifest (format v1). See docs/3PK.md for the spec.
-//!
-//! The manifest is the portable form of everything the catalog knows about a
-//! release: raw STLs carry no metadata, so this travels alongside them so one
-//! user's curation (names, poses, scale, supports, tags, per-file pose
-//! assignments) survives when another user scans the release.
 
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
@@ -57,9 +52,9 @@ pub struct Component {
     pub models: Vec<ManifestModel>,
 }
 
-/// The wire form of a catalog model: scanner fields plus every user override
-/// (`model_user_meta`), tags (`model_tags`) and per-file pose assignments
-/// (`file_variants`). Optional fields are omitted-as-null when unset.
+/// The wire form of a catalog model: scanner fields plus every user override,
+/// tags, and per-file pose assignments. Optional fields are omitted-as-null
+/// when unset.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct ManifestModel {
     pub id: Option<String>,
@@ -129,12 +124,10 @@ impl Manifest {
     }
 }
 
-/// Extract a component archive and rematerialize the names a deduplicated
-/// archive elided: any manifest-listed file missing after extraction is
-/// recreated from an extracted sibling with the same checksum — hardlinked
-/// where the destination volume supports it (the extracted release lands
-/// already deduplicated, mirroring the catalog's merge), copied otherwise.
-/// Works unchanged on non-dedup archives: nothing is missing, nothing to do.
+/// Extract a component archive and rematerialize any manifest-listed file
+/// a deduplicated archive elided, from an extracted sibling with the same
+/// checksum — hardlinked where the destination volume supports it, copied
+/// otherwise. A no-op step on non-dedup archives.
 pub fn extract_component_archive(
     archive_path: &Path,
     dest_dir: &Path,
@@ -149,13 +142,9 @@ pub fn extract_component_archive(
         .map_err(|e| AppError::IoError(format!("Extraction failed: {}", e)))?;
 
     // First extracted path per checksum = the donor for elided twins.
-    // `entry.name` comes straight from the untrusted manifest — a name like
-    // "../../foo", an absolute path, or a Windows drive-relative "C:foo"
-    // must not become a hardlink/copy target outside dest_dir, so every name
-    // goes through the same guard `file::import::safe_relative` uses for
-    // manifest paths elsewhere. A hostile name here is just skipped: it
-    // can't donate (and if some *other*, legitimate entry needed exactly
-    // that missing file, the rematerialization loop below will say so).
+    // `entry.name` is untrusted, so it goes through the same relative-path
+    // guard as below; a name that fails it is just skipped as a donor,
+    // not an error — a real gap still surfaces via the loop below.
     let mut by_checksum: std::collections::HashMap<&str, std::path::PathBuf> =
         std::collections::HashMap::new();
     for entry in files {
@@ -175,9 +164,8 @@ pub fn extract_component_archive(
             )));
         };
         let path = dest_dir.join(rel);
-        // Belt-and-suspenders: the guard above should already make this
-        // impossible, but a path that somehow escapes dest_dir must never
-        // be hardlinked/copied to.
+        // Belt-and-suspenders: this should be unreachable given the guard
+        // above, but never hardlink/copy to a path that escaped dest_dir.
         if !path.starts_with(dest_dir) {
             return Err(AppError::InvalidInput(format!(
                 "Manifest entry '{}' resolves outside the destination directory",
@@ -206,8 +194,7 @@ pub fn extract_component_archive(
 }
 
 /// BLAKE3 of a file's bytes, encoded `blake3:<hex>`. Streams so a multi-GB
-/// component archive never lands fully in memory. Reuses the hasher the
-/// duplicate-detector already ships.
+/// component archive never lands fully in memory.
 pub fn hash_file(path: &Path) -> Result<String, AppError> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| AppError::IoError(format!("Failed to open {}: {}", path.display(), e)))?;
@@ -313,7 +300,6 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("src/knight/body.stl"), b"unique-body-bytes!").unwrap();
 
-        // Pack (one of the two identical bases is elided)…
         let archive_path = dir.join("knight.zip");
         let archive = std::fs::File::create(&archive_path).unwrap();
         let entries = crate::file::compressors::compress_files(
@@ -324,7 +310,6 @@ mod tests {
         .unwrap();
         assert!(entries.iter().any(|e| !e.stored), "dedup actually happened");
 
-        // …the manifest lists every name with its checksum…
         let files: Vec<ManifestFile> = entries
             .iter()
             .map(|e| ManifestFile {
@@ -336,7 +321,6 @@ mod tests {
             })
             .collect();
 
-        // …and extraction rematerializes the elided name with equal bytes
         let out = dir.join("out");
         extract_component_archive(&archive_path, &out, &files).unwrap();
         for name in ["base.stl", "variant_b/base.stl", "body.stl"] {
@@ -377,9 +361,6 @@ mod tests {
         }
     }
 
-    /// A manifest entry named "../escape.stl" must not resolve above
-    /// dest_dir — extraction refuses it instead of hard-linking/copying a
-    /// donor out to the parent directory.
     #[test]
     fn rejects_a_parent_dir_escape_in_a_manifest_name() {
         let dir = std::env::temp_dir().join(format!("stlpack_3pk_trav1_{}", std::process::id()));
@@ -436,7 +417,6 @@ mod tests {
         std::fs::write(&path, b"hello").unwrap();
         let hash = hash_file(&path).unwrap();
         assert!(hash.starts_with("blake3:"));
-        // deterministic: same bytes, same hash
         assert_eq!(hash, hash_file(&path).unwrap());
         std::fs::remove_dir_all(&dir).ok();
     }

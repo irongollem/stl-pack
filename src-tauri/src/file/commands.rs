@@ -180,8 +180,8 @@ pub async fn create_release(
 
     let copied_images = storage::copy_images(&image_paths, &release_path, &release_name)?;
     let mut copied_files = storage::copy_files(&other_file_paths, &release_path)?;
-    // The creator's licence (default from Settings, toggled in the builder)
-    // lands as canonical licence.<ext> so it rides inside release.3pk
+    // The creator's licence lands as canonical licence.<ext> so it rides
+    // inside release.3pk
     if let Some(licence) = licence_path {
         copied_files.push(storage::copy_licence(&licence, &release_path)?);
     }
@@ -227,13 +227,8 @@ pub async fn finalize_release(
         )));
     }
 
-    // Generate a unique ID for this compression job
     let job_id = Uuid::new_v4().to_string();
-
-    // Create cancellation token
     let cancel_token = Arc::new(AtomicBool::new(false));
-
-    // Register the token in our global state
     {
         let mut compressions = ACTIVE_COMPRESSIONS.lock().map_err(|e| {
             AppError::ConfigError(format!("Failed to access compressions registry: {}", e))
@@ -241,13 +236,11 @@ pub async fn finalize_release(
         compressions.insert(job_id.clone(), Arc::clone(&cancel_token));
     }
 
-    // Start the compression process in the background
     let app_handle_clone = app_handle.clone();
     let job_id_clone = job_id.clone();
     tokio::spawn(async move {
         let start_time = std::time::Instant::now();
 
-        // Run the actual compression
         let result = compression_jobs::perform_compression(
             app_handle_clone.clone(),
             job_id_clone.clone(),
@@ -256,12 +249,10 @@ pub async fn finalize_release(
         )
         .await;
 
-        // Clean up the cancellation token
         if let Ok(mut compressions) = ACTIVE_COMPRESSIONS.lock() {
             compressions.remove(&job_id_clone);
         }
 
-        // Send appropriate completion event
         match result {
             Ok((files, size, target_dir)) => {
                 let elapsed = start_time.elapsed().as_secs_f64();
@@ -295,7 +286,6 @@ pub async fn finalize_release(
         }
     });
 
-    // Return the job ID immediately so the client can use it to cancel if needed
     Ok(job_id)
 }
 
@@ -371,8 +361,8 @@ pub async fn open_with_default_app(paths: Vec<String>) -> Result<(), AppError> {
         }
         #[cfg(target_os = "windows")]
         for path in &paths {
-            // new_command: without CREATE_NO_WINDOW this cmd shim flashed a
-            // console window on every PRINT click
+            // without CREATE_NO_WINDOW this cmd shim would flash a console
+            // window on every PRINT click
             let status = crate::process::new_command("cmd")
                 .args(["/C", "start", "", path])
                 .status()
@@ -411,7 +401,6 @@ pub async fn cancel_compression(job_id: String) -> Result<(), AppError> {
     })?;
 
     if let Some(token) = compressions.get(&job_id) {
-        // Signal cancellation
         token.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     } else {

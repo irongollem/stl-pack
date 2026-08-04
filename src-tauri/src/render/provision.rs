@@ -126,7 +126,7 @@ pub fn parse_blender_version(banner: &str) -> Option<(u32, u32, u32)> {
 
 /// Verdict for a *found* install — the caller maps detection failure to
 /// Missing. An unparseable banner passes as Ok: never block a working
-/// Blender on a banner format change (progress_args takes the same stance).
+/// Blender on a banner format change.
 pub fn classify(banner: &str) -> BlenderVerdict {
     match parse_blender_version(banner) {
         Some((major, minor, _)) if (major, minor) < MIN_VERSION => BlenderVerdict::TooOld,
@@ -437,9 +437,8 @@ fn remove_old_versions(root: &Path, keep: &str) {
 /// A running download's job id and its cancel token.
 type ActiveProvisionJob = (String, Arc<Notify>);
 
-/// The one running download, if any. An Option, not a map like
-/// ACTIVE_RENDERS: two concurrent downloads of the same pinned Blender
-/// could only fight over the same final directory.
+/// The one running download, if any — two concurrent downloads of the same
+/// pinned Blender could only fight over the same final directory.
 static ACTIVE_PROVISION: Lazy<Mutex<Option<ActiveProvisionJob>>> = Lazy::new(|| Mutex::new(None));
 
 /// Kick off the managed download; progress arrives as
