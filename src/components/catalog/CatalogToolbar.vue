@@ -90,6 +90,8 @@
       <option value="none">Sort: A–Z</option>
       <option value="designer">Group: designer › release</option>
       <option value="designer-date">Group: designer › newest</option>
+      <option value="height">Sort: tallest first</option>
+      <option value="volume">Sort: largest first</option>
     </select>
     <select
       v-model="designerFilter"
@@ -101,6 +103,78 @@
         {{ d.designer }} ({{ d.model_count }})
       </option>
     </select>
+    <div class="dropdown">
+      <button
+        type="button"
+        tabindex="0"
+        class="btn btn-sm gap-1.5 font-medium text-[11px]"
+        title="Filter by physical size — mined by the geometry scan"
+      >
+        Size
+        <span
+          v-if="hasGeometryFilter"
+          class="w-1.5 h-1.5 rounded-full bg-primary"
+          aria-hidden="true"
+        ></span>
+      </button>
+      <div
+        tabindex="0"
+        class="dropdown-content menu z-30 mt-1 w-64 rounded-box bg-base-200 p-3 gap-1 shadow-lg"
+      >
+        <div
+          class="font-mono text-[10px] tracking-wide text-base-content/40 uppercase px-1"
+        >
+          Height (mm)
+        </div>
+        <div class="flex items-center gap-1.5 px-1 mb-2">
+          <NumberInput
+            id="geo-height-min"
+            v-model="heightMinMm"
+            placeholder="min"
+            :min="0"
+            class="flex-1 min-w-0"
+          />
+          <span class="opacity-40 shrink-0">–</span>
+          <NumberInput
+            id="geo-height-max"
+            v-model="heightMaxMm"
+            placeholder="max"
+            :min="0"
+            class="flex-1 min-w-0"
+          />
+        </div>
+        <div
+          class="font-mono text-[10px] tracking-wide text-base-content/40 uppercase px-1"
+        >
+          Volume (cm³)
+        </div>
+        <div class="flex items-center gap-1.5 px-1 mb-1.5">
+          <NumberInput
+            id="geo-volume-min"
+            v-model="volumeMinCm3"
+            placeholder="min"
+            :min="0"
+            class="flex-1 min-w-0"
+          />
+          <span class="opacity-40 shrink-0">–</span>
+          <NumberInput
+            id="geo-volume-max"
+            v-model="volumeMaxCm3"
+            placeholder="max"
+            :min="0"
+            class="flex-1 min-w-0"
+          />
+        </div>
+        <button
+          v-if="hasGeometryFilter"
+          type="button"
+          class="btn btn-ghost btn-xs self-start"
+          @click="clearGeometryFilter"
+        >
+          Clear
+        </button>
+      </div>
+    </div>
     <span class="flex-1"></span>
     <div class="join">
       <div class="dropdown">
@@ -327,8 +401,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { storeToRefs } from "pinia";
+import NumberInput from "../NumberInput.vue";
 import { useCatalogStore } from "../../stores/catalogStore";
 import { formatFileSize } from "../../utils/format";
 
@@ -339,6 +414,11 @@ const {
   groupMode,
   designerFilter,
   designers,
+  heightMinMm,
+  heightMaxMm,
+  volumeMinMm3,
+  volumeMaxMm3,
+  hasGeometryFilter,
   roots,
   isScanning,
   hasRoots,
@@ -352,10 +432,26 @@ const {
   addFolder,
   scanAll,
   cancelAllScans,
+  clearGeometryFilter,
   openNormalize,
   bulkPack,
   openBatchRender,
 } = store;
+
+// The store keeps volume in mm³ (the backend's unit); cm³ is what a person
+// sizing a print actually thinks in, so the inputs convert at the edge.
+const volumeMinCm3 = computed<number | null>({
+  get: () => (volumeMinMm3.value === null ? null : volumeMinMm3.value / 1000),
+  set: (v) => {
+    volumeMinMm3.value = v === null ? null : v * 1000;
+  },
+});
+const volumeMaxCm3 = computed<number | null>({
+  get: () => (volumeMaxMm3.value === null ? null : volumeMaxMm3.value / 1000),
+  set: (v) => {
+    volumeMaxMm3.value = v === null ? null : v * 1000;
+  },
+});
 
 const searchInput = ref<HTMLInputElement | null>(null);
 // "/" focuses search from anywhere, like GitHub/Slack — except while the

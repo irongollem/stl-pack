@@ -193,25 +193,62 @@ export const useCatalogStore = defineStore("catalog", () => {
   const selectedTags = ref<string[]>([]);
   const allTags = ref<TagCount[]>([]);
 
-  /* Ordering/grouping: flat A–Z by model name, or grouped designer › release
-     with releases alphabetical or newest-first. The backend sorts (grouping
-     must hold across pages); the view only draws headers where the designer
-     or release changes between consecutive rows. */
-  type GroupMode = "none" | "designer" | "designer-date";
+  /* Ordering/grouping: flat A–Z by model name, grouped designer › release
+     (alphabetical or newest-first), or flat tallest/largest-first. The
+     backend sorts (grouping must hold across pages); the view only draws
+     designer/release headers where those change between consecutive rows,
+     which is also why height/volume sort renders flat — sorting by size
+     doesn't keep a designer's models contiguous. */
+  type GroupMode = "none" | "designer" | "designer-date" | "height" | "volume";
   const SORT_FOR_MODE: Record<GroupMode, string> = {
     none: "name",
     designer: "designer",
     "designer-date": "designer_date",
+    height: "height",
+    volume: "volume",
   };
+  const GROUP_MODES: GroupMode[] = [
+    "none",
+    "designer",
+    "designer-date",
+    "height",
+    "volume",
+  ];
   const storedGroupMode = localStorage.getItem("catalogGroupMode");
   const groupMode = ref<GroupMode>(
-    storedGroupMode === "designer" || storedGroupMode === "designer-date"
-      ? storedGroupMode
+    GROUP_MODES.includes(storedGroupMode as GroupMode)
+      ? (storedGroupMode as GroupMode)
       : "none",
   );
   watch(groupMode, (mode) => localStorage.setItem("catalogGroupMode", mode));
   // exact-match facet on top of the fuzzy text search; "" = all designers
   const designerFilter = ref("");
+  /* Range facet: physical height/volume, mined by the geometry job (see
+     ModelFileGeometry). Stored canonically in mm/mm³ — the backend's units
+     and what search_groups' bounds expect — the toolbar converts volume to
+     cm³ for display since nobody thinks in cubic millimeters. */
+  const heightMinMm = ref<number | null>(null);
+  const heightMaxMm = ref<number | null>(null);
+  const volumeMinMm3 = ref<number | null>(null);
+  const volumeMaxMm3 = ref<number | null>(null);
+  const hasGeometryFilter = computed(
+    () =>
+      heightMinMm.value !== null ||
+      heightMaxMm.value !== null ||
+      volumeMinMm3.value !== null ||
+      volumeMaxMm3.value !== null,
+  );
+  const clearGeometryFilter = () => {
+    heightMinMm.value = null;
+    heightMaxMm.value = null;
+    volumeMinMm3.value = null;
+    volumeMaxMm3.value = null;
+  };
+  // How many of the current results a height/volume filter is hiding for
+  // lack of mined geometry (not for failing the range) — see
+  // search_groups' not_mined_count. Meaningless while no filter is active;
+  // the result bar only shows it when hasGeometryFilter is true.
+  const notMinedCount = ref(0);
   // Mirrors the backend-owned, session-only mature-content access state.
   // Search commands consult the same state themselves; this ref is only for
   // frontend presentation and refreshing when Settings changes it.
@@ -347,6 +384,12 @@ export const useCatalogStore = defineStore("catalog", () => {
       query.value,
       selectedTags.value,
       designerFilter.value || null,
+      {
+        height_min_mm: heightMinMm.value,
+        height_max_mm: heightMaxMm.value,
+        volume_min_mm3: volumeMinMm3.value,
+        volume_max_mm3: volumeMaxMm3.value,
+      },
       SORT_FOR_MODE[groupMode.value],
       PAGE_SIZE,
       offset,
@@ -356,6 +399,7 @@ export const useCatalogStore = defineStore("catalog", () => {
         ? [...groups.value, ...result.data.groups]
         : result.data.groups;
       total.value = result.data.total;
+      notMinedCount.value = result.data.not_mined_count ?? 0;
       // keep the drawer header's aggregates fresh (poses/sizes may change)
       if (selectedGroup.value) {
         const current = selectedGroup.value.group_name.toLowerCase();
@@ -372,18 +416,36 @@ export const useCatalogStore = defineStore("catalog", () => {
   const loadMore = () => runSearch(true);
 
   let searchTimeout: number | null = null;
-  watch([query, selectedTags, designerFilter, groupMode], () => {
-    if (searchTimeout) clearTimeout(searchTimeout);
-    searchTimeout = setTimeout(() => runSearch(), 250) as unknown as number;
-  });
+  watch(
+    [
+      query,
+      selectedTags,
+      designerFilter,
+      groupMode,
+      heightMinMm,
+      heightMaxMm,
+      volumeMinMm3,
+      volumeMaxMm3,
+    ],
+    () => {
+      if (searchTimeout) clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => runSearch(), 250) as unknown as number;
+    },
+  );
 
   // One pass over the loaded page(s): a new header opens whenever the
   // designer or release changes between consecutive rows — safe because the
   // backend sorts by exactly (designer, release, name). Flat mode is the
   // same structure with a single headerless section, so the template never
-  // branches on the mode.
+  // branches on the mode. Height/volume sort is flat too: sorting by size
+  // doesn't keep a designer's models contiguous, so there's nothing sound
+  // to draw a designer header against.
   const sections = computed<DesignerSection[]>(() => {
-    if (groupMode.value === "none") {
+    if (
+      groupMode.value === "none" ||
+      groupMode.value === "height" ||
+      groupMode.value === "volume"
+    ) {
       return [
         {
           key: "all",
@@ -2579,6 +2641,13 @@ export const useCatalogStore = defineStore("catalog", () => {
     groupMode,
     designerFilter,
     designers,
+    heightMinMm,
+    heightMaxMm,
+    volumeMinMm3,
+    volumeMaxMm3,
+    hasGeometryFilter,
+    clearGeometryFilter,
+    notMinedCount,
     groups,
     total,
     stats,
