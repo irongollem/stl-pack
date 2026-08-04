@@ -118,8 +118,14 @@ impl BaseAccumulator {
         self.area_sum += 0.5 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1)).abs();
     }
 
-    fn finish(self) -> Option<(BaseShape, f64)> {
+    fn finish(self, global_min_z: f32) -> Option<(BaseShape, f64)> {
         if self.overflowed || self.tri_count == 0 {
+            return None;
+        }
+        // Eviction is lazy (it runs on the next flat candidate), so if the
+        // true floor dropped after the last one arrived, the buffered disc
+        // is a shelf above the bottom — not a base.
+        if self.floor_z - global_min_z > BASE_Z_EPS_MM {
             return None;
         }
         let w = f64::from(self.max_xy[0] - self.min_xy[0]);
@@ -256,7 +262,7 @@ impl FactsAccumulator {
         let open_edge_count = self
             .edge_counts
             .map(|counts| counts.values().filter(|&&count| count != 2).count() as u32);
-        let base = self.base.finish();
+        let base = self.base.finish(self.min[2]);
         StlFacts {
             tri_count: self.pushed,
             min: (self.min[0], self.min[1], self.min[2]),
@@ -923,6 +929,20 @@ mod tests {
 
         let bytes = build_binary_stl(&triangles);
         let facts = parse_binary_stl_facts(&bytes).expect("well-formed octahedron STL");
+        assert!(facts.base.is_none(), "got {:?}", facts.base);
+    }
+
+    #[test]
+    fn a_flat_disc_above_the_true_bottom_is_not_a_base() {
+        // A perfect 32mm disc at z=2 — then the stream ends with a spike
+        // down to z=0 and no flat triangle after it, so lazy eviction never
+        // fires. finish() must reject the stale anchor, not report a base
+        // hovering above the mesh's real bottom.
+        let mut triangles = disc_triangles(16.0, 64, 2.0);
+        triangles.push([(0.0, 0.0, 2.0), (1.0, 0.0, 2.0), (0.0, 0.0, 0.0)]);
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed shelf STL");
         assert!(facts.base.is_none(), "got {:?}", facts.base);
     }
 
