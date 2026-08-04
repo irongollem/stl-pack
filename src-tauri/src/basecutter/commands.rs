@@ -1,7 +1,5 @@
 //! Tauri commands for the Base Cutter job pipeline. Thin: validation +
-//! spawning here, the actual child-process/stdout-parsing lives in job.rs
-//! (kept process-free-testable per docs/BASECUTTER.md phase 3). Mirrors
-//! render/commands.rs's start_render/cancel_render shape.
+//! spawning here, the actual child-process/stdout-parsing lives in job.rs.
 
 use crate::basecutter::cutters::{top_face_of, CutterKind, Placement, PlinthParams};
 use crate::basecutter::job::{self, BaseCutJob, BaseCutToken};
@@ -59,15 +57,12 @@ const WINDOWS_RESERVED_NAMES: &[&str] = &[
     "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
-/// Whether `segment` is safe to use as a single bare filename component —
-/// shared by `validate_placements` (placement.name -> `{name}.stl` in
-/// base_cut.py's unique_out_path) and generator::start_landscape_generation
-/// (preset_id -> `{slug}-{seed}.stl`). Both values cross the Tauri IPC
-/// boundary from an untrusted frontend and land in an `os.path.join`/
-/// `PathBuf::join` call, where an absolute path or `..` component escapes
-/// the intended output directory rather than staying inside it — this is
-/// the actual trust boundary, the frontend's own char-blocklist
-/// (src/utils/placementName.ts) is not enough on its own.
+/// Whether `segment` is safe to use as a single bare filename component.
+/// Values crossing the Tauri IPC boundary from an untrusted frontend can
+/// land in an `os.path.join`/`PathBuf::join` call, where an absolute path
+/// or `..` component escapes the intended output directory — this
+/// function is the actual trust boundary; a frontend char-blocklist is
+/// not enough on its own.
 ///
 /// Rejects: empty (after trim), any path separator (`/` or `\` — both, not
 /// just the host OS's, since the userbase is mostly Windows regardless of
@@ -106,12 +101,10 @@ pub(crate) fn is_safe_filename_segment(segment: &str) -> bool {
 }
 
 /// Rust-side sanity bound on `BaseCutJob.topper_mm` — deliberately looser
-/// than base_cut.py's [1.0, 3.0] clamp (docs/BASECUTTER.md "Pinned
-/// interfaces": "the script clamps 1..3 anyway — Rust just guards
-/// nonsense"). This only rejects values that can't possibly be a sane
-/// request (non-finite, zero/negative, or wildly oversized); the script
-/// remains the single source of truth for the actual usable range and
-/// echoes back a clamp in CUT_DONE when it adjusts the value.
+/// than base_cut.py's [1.0, 3.0] clamp. This only rejects values that
+/// can't possibly be a sane request (non-finite, zero/negative, or wildly
+/// oversized); the script remains the source of truth for the actual
+/// usable range and echoes back a clamp in CUT_DONE when it adjusts.
 const MAX_SANE_TOPPER_MM: f64 = 10.0;
 
 /// Guard for `BaseCutJob.topper_mm`, split out as a plain function so it's
@@ -145,12 +138,8 @@ fn validate_topper_mm(topper_mm: Option<f64>) -> Result<(), AppError> {
 ///   names each output STL after the placement, so a collision means one
 ///   cut silently overwrites the other's file;
 /// - a placement.name that isn't a safe single filename segment is
-///   rejected — it flows unsanitized into base_cut.py's `unique_out_path`
-///   as `os.path.join(out_dir, f"{name}.stl")`, and this IPC command is the
-///   real trust boundary (the frontend's char-blocklist in
-///   src/utils/placementName.ts is not enough on its own): a caller of the
-///   Tauri bridge can send any string, and a `..`/absolute/drive-prefixed
-///   name would write the STL outside out_dir entirely.
+///   rejected (see `is_safe_filename_segment`) — the real trust boundary
+///   for a name that crosses the Tauri IPC from an untrusted frontend.
 pub fn validate_placements(placements: &[Placement], plinth: &PlinthParams) -> Result<(), AppError> {
     let mut seen_names: HashSet<&str> = HashSet::new();
     for (index, placement) in placements.iter().enumerate() {
@@ -184,10 +173,9 @@ pub fn validate_placements(placements: &[Placement], plinth: &PlinthParams) -> R
 /// A running base-cut job's id and its cancel token.
 type ActiveBaseCutJob = (String, Arc<Notify>);
 
-/// The single running base-cut job, if any (id + its cancel token). Unlike
-/// render's ACTIVE_RENDERS map, only one base-cut job may run at a time
-/// (docs/BASECUTTER.md "Job pipeline") — a plain Option is the simple guard
-/// the doc calls for, no map needed.
+/// The single running base-cut job, if any (id + its cancel token). Only
+/// one base-cut job may run at a time, so a plain Option is enough — no
+/// map needed.
 static ACTIVE_BASE_CUT: Lazy<Mutex<Option<ActiveBaseCutJob>>> = Lazy::new(|| Mutex::new(None));
 
 fn output_is_inside_catalog(output: &str, roots: &[String]) -> bool {
@@ -305,9 +293,8 @@ pub async fn cancel_base_cut(job_id: String) -> Result<(), AppError> {
 /// Drive one job through job::spawn_and_parse, translating each
 /// BaseCutToken into a BaseCutStatus event as it arrives, then emit the
 /// terminal Finished/Cancelled/Failed event. A cancelled run comes back as
-/// `Err((AppError::UserCancelled(_), _))` (spawn_and_parse's select loop),
-/// which is matched out separately so the frontend sees Cancelled rather
-/// than Failed — same distinction render/commands.rs::run_render_job makes.
+/// `Err((AppError::UserCancelled(_), _))`, which is matched out separately
+/// so the frontend sees Cancelled rather than Failed.
 async fn run_base_cut_job(
     app_handle: AppHandle,
     job_id: String,
@@ -450,12 +437,10 @@ fn handle_token(app_handle: &AppHandle, job_id: &str, token: &BaseCutToken) {
     }
 }
 
-/// The pseudo-designer folder cut output lands under (docs/BASECUTTER.md
-/// phase 5, "export-into-catalog"). A real studio name would misattribute
-/// bases the user cut themselves; "Plinth Bases" reads as its own shelf and
-/// — per catalog::layout's designer/release/model tiers — the group name
-/// and cut date stay in SEPARATE segments (see export_cuts's doc comment
-/// for why that separation is the whole reason this parses cleanly).
+/// The pseudo-designer folder cut output lands under. A real studio name
+/// would misattribute bases the user cut themselves; "Plinth Bases" reads
+/// as its own shelf (see export_cuts's doc comment for why the group name
+/// and cut date stay in separate segments).
 const PLINTH_DESIGNER: &str = "Plinth Bases";
 
 /// A successful cut as it crosses from the transient Blender output area
@@ -494,10 +479,8 @@ pub struct PlinthRepairSummary {
 }
 
 /// Proleptic-Gregorian (year, month, day) from a Unix timestamp, UTC. No
-/// date/time crate is in Cargo.toml (elsewhere in the codebase a raw
-/// SystemTime/UNIX_EPOCH duration is the calendar-free norm, e.g.
-/// catalog/pack.rs's packed_at) — this is Howard Hinnant's well-known
-/// division-only civil-from-days conversion:
+/// date/time crate is in Cargo.toml, so this is Howard Hinnant's
+/// well-known division-only civil-from-days conversion:
 /// http://howardhinnant.github.io/date_algorithms.html
 fn civil_from_unix_seconds(secs: u64) -> (i64, u32, u32) {
     let days = (secs / 86_400) as i64;
@@ -1229,8 +1212,6 @@ mod tests {
         );
     }
 
-    // ---- validate_topper_mm (docs/BASECUTTER.md's BaseCutJob.topper_mm) ----
-
     #[test]
     fn topper_mm_none_is_always_fine() {
         assert!(validate_topper_mm(None).is_ok());
@@ -1268,10 +1249,6 @@ mod tests {
         assert!(err.to_string().contains("finite"), "{err}");
     }
 
-    // ---- placement.name path-traversal guard (IPC is the trust boundary:
-    // a caller of the Tauri bridge can send any string, regardless of what
-    // the frontend's char-blocklist would allow through a UI) ----
-
     #[test]
     fn rejects_placement_names_that_escape_out_dir() {
         for bad in ["../evil", "a/b", "a\\b", "C:evil", "/etc/passwd", "..", "."] {
@@ -1308,8 +1285,6 @@ mod tests {
         ];
         assert!(validate_placements(&placements, &PlinthParams::default()).is_ok());
     }
-
-    // ---- export_cuts_to_catalog (docs/BASECUTTER.md phase 5) ----
 
     /// civil_from_unix_seconds pinned against `date -u -r <secs>` reference
     /// points (epoch, a Y2K leap day, a 2024 leap day, and a 2026 date) so a
@@ -1432,10 +1407,6 @@ mod tests {
             .join("Plinth Bases/2026-07 Test Regiment/Test Regiment — 25 mm Square — 01/Test Regiment — 25 mm Square — 01.stl")
             .is_file());
     }
-
-    // ---- .glb sidecar copy (VTT GLB export design doc "Base cut":
-    // "commands.rs: export_cuts_to_catalog copies the .glb sidecar when it
-    // exists next to a cut STL") ----
 
     /// A glb-mode cut's `.glb` twin (same stem, next to the STL — exactly
     /// what base_cut.py writes) rides along into the catalog under the
