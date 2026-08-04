@@ -1,22 +1,6 @@
 //! The on-disk normalizer: makes the DISK match the curated catalog by
 //! moving folders into the canonical layout (see layout.rs) and writing an
 //! authoritative model.json into every leaf it touches.
-//!
-//! Shape of the operation — three explicit stages, so the user sees and
-//! approves every move before anything happens:
-//!
-//! 1. `plan` — read-only. Computes the full move list per model group.
-//! 2. `apply_ops` — executes approved moves; every rename immediately
-//!    re-keys the catalog index so user curation (tags, overrides, pose
-//!    assignments) never orphans.
-//! 3. `finalize` — writes model.json per leaf dir (this is what makes a
-//!    rescan re-derive the identical catalog with ZERO folder heuristics),
-//!    deletes stale sidecars, sweeps empty dirs.
-//!
-//! Moves are plain fs::rename — on the same volume that's a metadata op
-//! that preserves hardlinks (the dedup merge invariant on the NAS). A
-//! cross-volume rename fails loudly and is reported, never silently
-//! degraded to copy+delete.
 
 use super::{
     dups, layout, BatchOutcome, NormalizeGroupPlan, NormalizeOp, NormalizePlan, NormalizeSkip,
@@ -26,9 +10,8 @@ use rusqlite::Connection;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
-/// One catalog member with every facet resolved user-override-first —
-/// the same NULLIF(COALESCE(u.x, m.x), '') rule the rest of the catalog
-/// reads by ('' in user meta = explicitly cleared, not a real value).
+/// One catalog member with every facet resolved user-override-first:
+/// '' in user meta means explicitly cleared, not a real value.
 struct MemberRow {
     dir: String,
     gname: String,
@@ -121,8 +104,7 @@ fn member_rows(conn: &Connection, group: Option<&str>) -> Result<Vec<MemberRow>,
 }
 
 /// `child` is `base` itself or lies beneath it (path-segment aware —
-/// "/lib/ab" is NOT under "/lib/a"). Shared with the roots commands, whose
-/// nesting guard must agree with the planner about what "inside" means.
+/// "/lib/ab" is NOT under "/lib/a").
 pub(crate) fn is_under(child: &str, base: &str) -> bool {
     child == base
         || (child.len() > base.len()
@@ -130,7 +112,6 @@ pub(crate) fn is_under(child: &str, base: &str) -> bool {
             && child[base.len()..].starts_with(MAIN_SEPARATOR))
 }
 
-/// Deepest directory containing every member dir.
 fn common_ancestor(dirs: &[&str]) -> Option<PathBuf> {
     let mut iter = dirs.iter();
     let mut acc: Vec<std::path::Component> = Path::new(iter.next()?).components().collect();
@@ -154,8 +135,8 @@ fn first_some(rows: &[&MemberRow], get: fn(&MemberRow) -> Option<&String>) -> Op
     rows.iter().find_map(|r| get(r).cloned())
 }
 
-/// lowercase variant -> the CONVENTIONAL spelling (layout::title_case),
-/// so case-variant names ("Sword"/"sword"/"SWORD") resolve to ONE leaf
+/// lowercase variant -> the CONVENTIONAL spelling, so case-variant
+/// names ("Sword"/"sword"/"SWORD") resolve to ONE leaf
 /// everywhere the layout is built — the tool decides casing, not
 /// whichever member got typed first.
 fn canonical_variants(members: &[&MemberRow]) -> HashMap<String, String> {
@@ -174,7 +155,6 @@ struct FileRowLite {
     file_name: String,
 }
 
-/// One file's facet assignments (the drawer's file->pose/variant filing).
 struct FileFacets {
     variant: Option<String>,
     pose: Option<String>,
@@ -219,12 +199,9 @@ struct FanOutIntent {
 }
 
 /// Rebuild `computed` segment by segment from `root`, adopting the exact
-/// casing of any directory that already exists along the way. Metadata
-/// carries display case (an old sidecar said "AELVES - THE FARWOOD"; the
-/// disk says "Aelves - The Farwood") — fighting the difference produces
-/// ghost renames that never converge on case-insensitive volumes, and
-/// would fork a SECOND tree on case-sensitive ones (the NAS). Existing
-/// dirs win; metadata case only ever names dirs that don't exist yet.
+/// casing of any directory that already exists along the way: fighting a
+/// case difference ghost-renames forever on case-insensitive volumes and
+/// forks a SECOND tree on case-sensitive ones. Existing dirs win.
 fn adopt_disk_casing(root: &Path, computed: &Path) -> PathBuf {
     let Ok(rel) = computed.strip_prefix(root) else {
         return computed.to_path_buf();
@@ -355,20 +332,14 @@ fn numbered_name(name: &str, taken: &HashMap<String, String>) -> String {
     unreachable!("ran out of integers before file names")
 }
 
-/// Plan one file's landing spot in a merge bucket.
+/// Plan one file's landing spot in a merge bucket. File names are the
+/// DESIGNER'S — untouched unless an actual clash forces a choice:
+/// byte-identical to the claimant -> reviewable "drop"; else a pose
+/// suffix when the member has one and it frees the name; else a numbered
+/// name — never skip, never lose a file.
 ///
-/// File names are the DESIGNER'S — they stay untouched unless an actual
-/// clash forces a choice (pose is metadata: file_variants + model.json,
-/// not a mandatory name mutation). Clash policy, in order:
-/// 1. byte-identical to the claimant -> reviewable "drop" (the copy is
-///    redundant once one lands — the repeated-bases case)
-/// 2. pose suffix, when the member has a pose and it frees the name
-///    (identically-named files from pose dirs A/B/C)
-/// 3. numbered name — never skip, never lose a file
-///
-/// `pose_recorded`: the pose came FROM file_variants (fan-out) — emitting
-/// a metadata-only op to re-record it would leave the plan permanently
-/// non-empty and the structure badge permanently 'dirty'.
+/// `pose_recorded`: the pose came FROM file_variants — re-recording it
+/// would leave the plan permanently non-empty.
 #[allow(clippy::too_many_arguments)]
 fn place_file(
     current: String,
@@ -475,7 +446,6 @@ pub fn plan(
 
     for members in groups.values() {
         let display = members[0].gname.clone();
-        // scope to one model when the drawer's per-model cleanup asked for it
         if let Some(filter) = group_filter {
             if !display.eq_ignore_ascii_case(filter.trim()) {
                 continue;
@@ -628,16 +598,12 @@ pub fn plan(
             }
         };
 
-        // ---- stranded images in EXCLUSIVE ancestor dirs. A source model
-        // dir like "Little Knight's Command Group/" often holds its
-        // thumbnails BESIDE the build folders; the build folders merge
-        // away as members and the images stay stranded in a husk dir
-        // forever. An ancestor qualifies while every model dir beneath it
-        // belongs to this group — the walk stops the moment a foreign
-        // model shares the dir, so release-level images that belong to
-        // everybody are never claimed. IMAGES ONLY, deliberately: an
-        // exclusive month folder can also hold backup archives and other
-        // freight that has no business inside a model dir.
+        // ---- stranded images in EXCLUSIVE ancestor dirs: thumbnails
+        // often sit BESIDE the build folders, which merge away and leave
+        // a husk. An ancestor qualifies while every model dir beneath it
+        // belongs to this group, so release-level images shared with a
+        // foreign model are never claimed. IMAGES ONLY, deliberately: an
+        // exclusive folder can also hold backup archives and freight.
         {
             // above the wholesale base (it carries its own insides), or
             // above each member in per-member mode
@@ -706,12 +672,11 @@ pub fn plan(
             }
         }
 
-        // ---- file-level VARIANT assignments materialize as folders.
-        // A dump folder split in the drawer ("tons of variants" filed onto
-        // files) has ONE member row with variant NULL — member-level
-        // bucketing would flatten everything into Supported/ and the
-        // variants would exist only as invisible metadata. Such members
-        // fan out per FILE: each file's effective facets pick its leaf.
+        // ---- file-level VARIANT assignments materialize as folders. A
+        // member row with variant NULL but per-file assignments would
+        // flatten under member-level bucketing, leaving the variants as
+        // invisible metadata. Such members fan out per FILE: each file's
+        // effective facets pick its leaf.
         let mut fan_out: HashSet<usize> = HashSet::new();
         let mut fanout_by_leaf: BTreeMap<String, Vec<FanOutIntent>> = BTreeMap::new();
         for (i, member) in members.iter().enumerate() {
@@ -792,11 +757,10 @@ pub fn plan(
 
         for (leaf, idxs) in &buckets {
             // A leaf that already exists — or WILL exist the moment the
-            // wholesale move lands (its pre-image inside the old base is on
-            // disk: Dark Wardens/Supported traveled along with B->M) — is
-            // normal, not an error. Nothing may dir-rename onto it;
-            // everything merges INTO it per-file, colliding against
-            // whatever it already holds.
+            // wholesale move lands (its pre-image inside the old base is
+            // on disk) — is normal, not an error. Nothing may dir-rename
+            // onto it; everything merges INTO it per-file, colliding
+            // against whatever it already holds.
             let leaf = leaf.as_str();
             let occupant = idxs
                 .iter()
@@ -863,8 +827,7 @@ pub fn plan(
                 // free on disk (case-only fixes of the same dir excepted).
                 // Both nesting directions are fatal: a leaf inside the
                 // member can't receive it, and a member inside its own
-                // leaf (Supported/Clean Bases -> Supported) would rename a
-                // child onto its own parent.
+                // leaf would rename a child onto its own parent.
                 let can_rename = !anchored
                     && !is_nested_parent
                     && !is_under(leaf, from_dir)
@@ -1012,8 +975,8 @@ pub fn apply_ops(conn: &mut Connection, ops: &[NormalizeOp]) -> Result<BatchOutc
             continue;
         }
         // "drop": op.from is a redundant copy of op.to. The plan proved
-        // them identical — verify AGAIN before deleting (same paranoia as
-        // the dup merge: anything can change between plan and apply).
+        // them identical — verify AGAIN before deleting: anything can
+        // change between plan and apply.
         if op.kind == "drop" {
             let from = Path::new(&op.from);
             let to = Path::new(&op.to);
@@ -1115,7 +1078,6 @@ pub fn apply_ops(conn: &mut Connection, ops: &[NormalizeOp]) -> Result<BatchOutc
     Ok(BatchOutcome { succeeded, errors })
 }
 
-/// Remember a file's pose as metadata at its (new) path.
 fn record_pose(conn: &Connection, path: &str, pose: Option<&str>) -> Result<(), rusqlite::Error> {
     let Some(pose) = pose.filter(|p| !p.trim().is_empty()) else {
         return Ok(());
@@ -1162,17 +1124,14 @@ pub fn finalize(
         let date = first_some(&refs, |r| r.date.as_ref());
         let display = members[0].gname.clone();
 
-        // Which folder the layout gets built under. A per-file merge (two
-        // members converging on one leaf) only whole-dir-renames the
-        // ANCHOR member — the others repoint their files.path but never
-        // touch their models.dir_path row (move_file_index has no notion
-        // of "this file's model moved too") — so by the time finalize
-        // runs, "every member agrees on one root" can be too strict even
-        // though every file landed together. Trust the disk instead: the
-        // owner is whichever root's canonical model_dir actually holds
-        // files now. Falls back to member agreement for a group finalize
-        // re-runs on without anything having moved (the sidecar-refresh
-        // repair path, which has no fresh disk state to trust yet).
+        // Which folder the layout gets built under. A per-file merge only
+        // whole-dir-renames the ANCHOR member — the others repoint their
+        // files but keep their models row — so at finalize time "every
+        // member agrees on one root" can be too strict even though every
+        // file landed together. Trust the disk instead: the owner is
+        // whichever root's canonical model_dir actually holds files now,
+        // falling back to member agreement for the no-move sidecar-refresh
+        // repair path, which has no fresh disk state to trust yet.
         let holds_models_at = |dir: &Path| {
             disk_files(dir).iter().any(|f| {
                 Path::new(&f.file_name)
@@ -1779,7 +1738,7 @@ mod tests {
         );
 
         // the whole point of staging: raw_a/raw_b are now empty and get
-        // rescanned as such (part of the normal "Scan all" flow) — that
+        // rescanned as such — that
         // must not strand the models that just moved OUT of them. Every
         // model here staged out of raw_a or raw_b, so both rescans see
         // nothing on disk.
@@ -1791,8 +1750,8 @@ mod tests {
             "staged model must survive rescans of the raw folders it left"
         );
         // "wisp" is one logical GROUP (two variant rows, split_a + split_b,
-        // sharing group_name) — search_groups collapses them the way the
-        // catalog cards do, confirming the merged model survived intact
+        // sharing group_name) — search_groups collapses them, confirming
+        // the merged model survived intact
         assert_eq!(
             db::search_groups(&conn, "wisp", &[], None, None, None, None, None, "name", 10, 0, true)
                 .unwrap()
@@ -2055,7 +2014,7 @@ mod tests {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         db::test_init(&conn);
         // only the nested pose dir is indexed as a member — exactly the
-        // mid-cleanup state the incident's rescan produced
+        // state a mid-cleanup rescan produces
         let mut row_a = model_row(&nested, "Centaurs", "Centaurs");
         row_a.support_status = Some("supported".into());
         row_a.pose = Some("A".into());
@@ -2173,12 +2132,8 @@ mod tests {
 
     #[test]
     fn metadata_casing_defers_to_existing_dirs() {
-        // An old sidecar said release "AELVES - THE FARWOOD"; the folder on
-        // disk says "2026-05 Aelves - The Farwood". Deriving the target from
-        // metadata case-sensitively made the group permanently 'dirty' with
-        // ghost moves into a path that IS the same dir on macOS — and would
-        // fork a second tree on the case-sensitive NAS. Existing dirs win;
-        // metadata case only names dirs that don't exist yet.
+        // Metadata says "AELVES - THE FARWOOD"; the disk says "2026-05
+        // Aelves - The Farwood". Existing dirs win, whatever the case.
         let root = std::env::temp_dir().join(format!("plinth_norm_case_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let sup = root.join("Dragon Trappers/2026-05 Aelves - The Farwood/Centaurs/Supported");
@@ -2289,9 +2244,9 @@ mod tests {
         assert!(!target.join("Supported/Clean Bases").exists());
         assert!(!target.join("Supported/Great Swords/Pose A").exists());
 
-        // THE placement regression: sidecars must land in the LEAVES
-        // holding the files, not in the swept pose dirs — or the next scan
-        // shatters the model into heuristic per-variant cards
+        // sidecars must land in the LEAVES holding the files, not in the
+        // swept pose dirs — or the next scan shatters the model into
+        // heuristic per-variant cards
         for leaf in ["Supported", "Supported/Great Swords", "Unsupported"] {
             let meta: serde_json::Value = serde_json::from_str(
                 &fs::read_to_string(target.join(leaf).join("model.json")).unwrap_or_else(|_| {
@@ -2313,11 +2268,10 @@ mod tests {
 
     #[test]
     fn file_level_variants_materialize_as_folders() {
-        // 'tons of variants' filed onto FILES in the drawer, but the member
-        // row itself carries variant NULL. Member-level bucketing alone
-        // would flatten everything into Supported/, leaving the variants
-        // as invisible metadata — files with variant assignments must fan
-        // out to their own variant folders instead.
+        // The member row carries variant NULL while its FILES carry
+        // variant assignments. Member-level bucketing alone would flatten
+        // everything into Supported/, leaving the variants as invisible
+        // metadata — such files must fan out to their own variant folders.
         let root = std::env::temp_dir().join(format!("plinth_norm_fan_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let old = root.join("unicorn cavalry");
@@ -2434,12 +2388,9 @@ mod tests {
 
     #[test]
     fn mixed_build_leaf_keeps_its_own_facts() {
-        // False Maiden: Unsupported/ held loose files (no variant) NEXT TO
-        // a variant subfolder. The build leaf's sidecar borrowed the
-        // sibling leaf's variant through the group fallback and claimed the
-        // child's render as its own image; the next scan took the sidecar
-        // as authority and the planner then wanted to move the loose files
-        // into the sibling's folder — forever.
+        // Unsupported/ holds loose files (no variant) NEXT TO a variant
+        // subfolder: the mixed leaf's sidecar must record its OWN facts,
+        // never borrow the sibling leaf's variant or render.
         let root = std::env::temp_dir().join(format!("plinth_norm_mixed_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let target = root.join("Bestiarum/2026-07 Dread Swamp/Maiden");
@@ -2507,12 +2458,10 @@ mod tests {
 
     #[test]
     fn stranded_thumbnails_follow_the_model() {
-        // Little Knights: the command group's thumbnails sat BESIDE its
-        // build folders in its own source dir. The build folders merged
-        // away as members and the jpgs stayed stranded in a husk directory
-        // the sweep couldn't remove. Images in EXCLUSIVE ancestor dirs
-        // (only this group's models beneath) must ride along to the model
-        // root; the foreign sibling keeps release-level files unclaimed.
+        // Thumbnails sit BESIDE the build folders, which merge away as
+        // members, leaving the jpgs in a husk dir. Images in EXCLUSIVE
+        // ancestor dirs (only this group's models beneath) must ride along
+        // to the model root; the foreign sibling keeps its files unclaimed.
         let root = std::env::temp_dir().join(format!("plinth_norm_husk_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let rel = root.join("pt1");
