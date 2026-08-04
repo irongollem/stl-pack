@@ -232,18 +232,27 @@ export const useCatalogStore = defineStore("catalog", () => {
   const heightMaxMm = ref<number | null>(null);
   const volumeMinMm3 = ref<number | null>(null);
   const volumeMaxMm3 = ref<number | null>(null);
+  /* Base facet: shape + a target mm, matched within a fixed ±1mm window
+     server-side (see db::search's push_base_where/having) — no min/max pair
+     like height/volume, since a base size is a discrete curated value, not
+     a measured range. */
+  const baseShapeFilter = ref<"any" | "round" | "square">("any");
+  const baseMmFilter = ref<number | null>(null);
   const hasGeometryFilter = computed(
     () =>
       heightMinMm.value !== null ||
       heightMaxMm.value !== null ||
       volumeMinMm3.value !== null ||
-      volumeMaxMm3.value !== null,
+      volumeMaxMm3.value !== null ||
+      baseMmFilter.value !== null,
   );
   const clearGeometryFilter = () => {
     heightMinMm.value = null;
     heightMaxMm.value = null;
     volumeMinMm3.value = null;
     volumeMaxMm3.value = null;
+    baseShapeFilter.value = "any";
+    baseMmFilter.value = null;
   };
   // How many of the current results a height/volume filter is hiding for
   // lack of mined geometry (not for failing the range) — see
@@ -407,6 +416,9 @@ export const useCatalogStore = defineStore("catalog", () => {
         height_max_mm: heightMaxMm.value,
         volume_min_mm3: volumeMinMm3.value,
         volume_max_mm3: volumeMaxMm3.value,
+        base_shape:
+          baseShapeFilter.value === "any" ? null : baseShapeFilter.value,
+        base_mm: baseMmFilter.value,
       },
       SORT_FOR_MODE[groupMode.value],
       PAGE_SIZE,
@@ -444,6 +456,8 @@ export const useCatalogStore = defineStore("catalog", () => {
       heightMaxMm,
       volumeMinMm3,
       volumeMaxMm3,
+      baseShapeFilter,
+      baseMmFilter,
     ],
     () => {
       if (searchTimeout) clearTimeout(searchTimeout);
@@ -2697,6 +2711,8 @@ export const useCatalogStore = defineStore("catalog", () => {
     heightMaxMm,
     volumeMinMm3,
     volumeMaxMm3,
+    baseShapeFilter,
+    baseMmFilter,
     hasGeometryFilter,
     clearGeometryFilter,
     notMinedCount,

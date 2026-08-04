@@ -532,8 +532,8 @@ mod tests {
         assert_eq!(count("SELECT COUNT(*) FROM group_covers"), 0);
         assert_eq!(count("SELECT COUNT(*) FROM packs"), 0);
         // FTS forgot the deleted model but still finds the survivor
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
-        assert_eq!(search(&conn, "bugbear", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
+        assert_eq!(search(&conn, "bugbear", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
 
         let (file_count, bytes) = dirs_summary(&conn, &["/lib/bugbear".to_string()]).unwrap();
         assert_eq!((file_count, bytes), (1, 4096));
@@ -582,7 +582,7 @@ mod tests {
             .collect();
         replace_catalog(&mut conn, "/lib", &bugbear_only, &bugbear_model, &[], &[], &[]).unwrap();
         assert_eq!(
-            search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total,
+            search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total,
             1,
             "staged model must survive a rescan of the folder it moved OUT of"
         );
@@ -647,7 +647,7 @@ mod tests {
         move_model(&mut conn, "/lib/newt", "/lib/amphibians/newt").unwrap();
 
         // model, files and search index all follow the new path
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.entries[0].dir_path, "/lib/amphibians/newt");
         assert!(page.entries[0].tags.contains(&"painted".to_string()));
@@ -668,7 +668,7 @@ mod tests {
         models[0].dir_path = "/lib/amphibians/newt".into();
         replace_catalog(&mut conn, "/lib", &files, &models, &[], &[], &[]).unwrap();
         assert_eq!(
-            search(&conn, "", &["painted".to_string()], None, None, None, None, 10, 0, true)
+            search(&conn, "", &["painted".to_string()], None, None, None, None, 10, 0, true, None, None)
                 .unwrap()
                 .total,
             1
@@ -793,7 +793,7 @@ mod tests {
 
         move_model(&mut conn, "/lib/newt", "/lib/amphibians/newt").unwrap();
 
-        let page = search(&conn, "shiny", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "shiny", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.entries[0].dir_path, "/lib/amphibians/newt");
     }

@@ -1714,7 +1714,13 @@ export type GeometryProgressStatus = { job_id: string; processed: number; total:
  * parameters, and search_catalog_groups (app_handle, query, tags,
  * designer, sort, limit, offset) was already six away from that ceiling.
  */
-export type GeometryRange = { height_min_mm: number | null; height_max_mm: number | null; volume_min_mm3: number | null; volume_max_mm3: number | null }
+export type GeometryRange = { height_min_mm: number | null; height_max_mm: number | null; volume_min_mm3: number | null; volume_max_mm3: number | null; 
+/**
+ * "round" | "square"; anything else (including unset) matches either
+ * when `base_mm` is set. Filters on CURATED base only — see
+ * db::search's push_base_where/push_base_having.
+ */
+base_shape: string | null; base_mm: number | null }
 export type GeometryStartedStatus = { job_id: string }
 export type GeometryStatus = { Started: GeometryStartedStatus } | { Progress: GeometryProgressStatus } | { Completed: GeometryCompletedStatus } | { Failed: GeometryFailedStatus } | { Cancelled: GeometryCancelledStatus }
 /**

@@ -193,6 +193,74 @@ fn push_geometry_having(
     }
 }
 
+// CAST(...AS REAL) on a canonical dimension string ("25") parses cleanly;
+// on an oval/rect ("60x35") SQLite's leading-numeric-prefix cast takes only
+// the first number, so the facet matches an oval by its first dimension
+// only — a documented approximation, not a bug (see search_groups' base
+// facet test). NULLIF drops the '' clear-tombstone before the cast so a
+// deliberately-cleared field reads as NULL, not 0.0.
+const CURATED_BASE_ROUND_SQL: &str =
+    "CAST(NULLIF(COALESCE(u.base_round, m.base_round), '') AS REAL)";
+const CURATED_BASE_SQUARE_SQL: &str =
+    "CAST(NULLIF(COALESCE(u.base_square, m.base_square), '') AS REAL)";
+
+/// Row-scoped base-size facet for the flat search: matches the effective
+/// CURATED base (never a mined suggestion — see catalog::db::geometry's
+/// model_base_suggestion) within a flat ±1mm window. `shape` narrows to one
+/// column; "any" (or unset) matches either.
+fn push_base_where(
+    where_sql: &mut String,
+    bound: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    base_shape: Option<&str>,
+    base_mm: Option<f64>,
+) {
+    let Some(mm) = base_mm else { return };
+    let clause = match base_shape {
+        Some("round") => format!("ABS({CURATED_BASE_ROUND_SQL} - ?) <= 1.0"),
+        Some("square") => format!("ABS({CURATED_BASE_SQUARE_SQL} - ?) <= 1.0"),
+        _ => format!(
+            "(ABS({CURATED_BASE_ROUND_SQL} - ?) <= 1.0 OR ABS({CURATED_BASE_SQUARE_SQL} - ?) <= 1.0)"
+        ),
+    };
+    let param_count = if matches!(base_shape, Some("round") | Some("square")) { 1 } else { 2 };
+    *where_sql = if where_sql.is_empty() {
+        format!("WHERE {}", clause)
+    } else {
+        format!("{} AND {}", where_sql, clause)
+    };
+    for _ in 0..param_count {
+        bound.push(Box::new(mm));
+    }
+}
+
+/// Group-scoped twin of push_base_where: true when ANY member of the group
+/// carries a matching curated base, mirroring push_geometry_having's
+/// MAX()-over-members idiom.
+fn push_base_having(
+    having_sql: &mut String,
+    bound: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    base_shape: Option<&str>,
+    base_mm: Option<f64>,
+) {
+    let Some(mm) = base_mm else { return };
+    let clause = match base_shape {
+        Some("round") => format!("MAX(ABS({CURATED_BASE_ROUND_SQL} - ?) <= 1.0) = 1"),
+        Some("square") => format!("MAX(ABS({CURATED_BASE_SQUARE_SQL} - ?) <= 1.0) = 1"),
+        _ => format!(
+            "MAX(ABS({CURATED_BASE_ROUND_SQL} - ?) <= 1.0 OR ABS({CURATED_BASE_SQUARE_SQL} - ?) <= 1.0) = 1"
+        ),
+    };
+    let param_count = if matches!(base_shape, Some("round") | Some("square")) { 1 } else { 2 };
+    *having_sql = if having_sql.is_empty() {
+        format!("HAVING {}", clause)
+    } else {
+        format!("{} AND {}", having_sql, clause)
+    };
+    for _ in 0..param_count {
+        bound.push(Box::new(mm));
+    }
+}
+
 pub(super) fn map_entry_row(row: &rusqlite::Row) -> rusqlite::Result<CatalogEntry> {
     let tags_joined: String = row.get(8)?;
     Ok(CatalogEntry {
@@ -242,6 +310,8 @@ pub fn search(
     limit: u32,
     offset: u32,
     include_nsfw: bool,
+    base_shape: Option<&str>,
+    base_mm: Option<f64>,
 ) -> Result<SearchPage, AppError> {
     let map_err =
         |e: rusqlite::Error| AppError::ConfigError(format!("Catalog search failed: {}", e));
@@ -254,6 +324,7 @@ pub fn search(
         volume_min_mm3,
         volume_max_mm3,
     );
+    push_base_where(&mut where_sql, &mut bound, base_shape, base_mm);
     let params_ref: Vec<&dyn rusqlite::types::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
 
     // LEFT JOIN model_user_meta u: the nsfw filter (like the tag/FTS ones)
@@ -317,6 +388,8 @@ pub fn search_groups(
     limit: u32,
     offset: u32,
     include_nsfw: bool,
+    base_shape: Option<&str>,
+    base_mm: Option<f64>,
 ) -> Result<GroupPage, AppError> {
     let map_err =
         |e: rusqlite::Error| AppError::ConfigError(format!("Catalog group search failed: {}", e));
@@ -375,6 +448,7 @@ pub fn search_groups(
         volume_min_mm3,
         volume_max_mm3,
     );
+    push_base_having(&mut having_sql, &mut bound, base_shape, base_mm);
     let params_ref: Vec<&dyn rusqlite::types::ToSql> = bound.iter().map(|b| b.as_ref()).collect();
 
     // Effective group = rename override > scanner group > own name. The
@@ -736,16 +810,16 @@ mod tests {
         let names = |page: GroupPage| -> Vec<String> {
             page.groups.into_iter().map(|g| g.group_name).collect()
         };
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer", 10, 0, true, None, None).unwrap();
         assert_eq!(names(page), vec!["zeb", "bog hag", "ash golem", "stray"]);
 
         // date mode: newest release first WITHIN a designer; 2/2026 must beat
         // 12/2025 (string comparison would get this backwards)
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer_date", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer_date", 10, 0, true, None, None).unwrap();
         assert_eq!(names(page), vec!["zeb", "ash golem", "bog hag", "stray"]);
 
         // the facet is exact but case-insensitive, and total honors it
-        let page = search_groups(&conn, "", &[], Some("bestiarum"), None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], Some("bestiarum"), None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(names(page), vec!["ash golem", "bog hag"]);
 
@@ -761,7 +835,7 @@ mod tests {
         );
 
         // release fields ride on the group rows for the UI's section headers
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer", 10, 1, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "designer", 10, 1, true, None, None).unwrap();
         assert_eq!(page.groups[0].release_name.as_deref(), Some("Dread Swamp"));
         assert_eq!(page.groups[0].release_date.as_deref(), Some("12/2025"));
     }
@@ -807,7 +881,7 @@ mod tests {
         // A height filter finds only the mined model in range; the query
         // itself excludes "ghost" here, so nothing is un-mined-and-hidden yet.
         let page =
-            search_groups(&conn, "ogre", &[], None, Some(20.0), None, None, None, "name", 10, 0, true)
+            search_groups(&conn, "ogre", &[], None, Some(20.0), None, None, None, "name", 10, 0, true, None, None)
                 .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.groups[0].group_name, "tall ogre");
@@ -818,7 +892,7 @@ mod tests {
         // Widen the query to include "ghost": it now fails the height bound
         // (NULL never satisfies a comparison) and gets COUNTED rather than
         // just silently dropped from the page.
-        let page = search_groups(&conn, "", &[], None, Some(20.0), None, None, None, "name", 10, 0, true)
+        let page = search_groups(&conn, "", &[], None, Some(20.0), None, None, None, "name", 10, 0, true, None, None)
             .unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.not_mined_count, 1);
@@ -826,6 +900,7 @@ mod tests {
         // Volume range narrows the same way, and un-mined counts the same way
         let page = search_groups(
             &conn, "", &[], None, None, None, Some(1000.0), Some(3000.0), "name", 10, 0, true,
+            None, None,
         )
         .unwrap();
         assert_eq!(page.total, 1);
@@ -835,25 +910,86 @@ mod tests {
         // No filter active: not_mined_count stays 0 even though "ghost" is
         // un-mined — it's an answer to "what is this filter hiding", not a
         // standing background alarm.
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 3);
         assert_eq!(page.not_mined_count, 0);
 
         // Sort by height: tallest first, un-mined sinks last rather than
         // sorting as zero (which would read as "shortest").
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "height", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "height", 10, 0, true, None, None).unwrap();
         let names: Vec<_> = page.groups.iter().map(|g| g.group_name.clone()).collect();
         assert_eq!(names, vec!["tall ogre", "short ogre", "ghost"]);
 
         // Sort by volume: largest first
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "volume", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "volume", 10, 0, true, None, None).unwrap();
         let names: Vec<_> = page.groups.iter().map(|g| g.group_name.clone()).collect();
         assert_eq!(names, vec!["tall ogre", "short ogre", "ghost"]);
 
         // The flat (ungrouped) search carries the same range filters
-        let flat = search(&conn, "", &[], Some(20.0), None, None, None, 10, 0, true).unwrap();
+        let flat = search(&conn, "", &[], Some(20.0), None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(flat.total, 1);
         assert_eq!(flat.entries[0].name, "tall ogre");
+    }
+
+    #[test]
+    fn base_facet_matches_curated_base_within_tolerance_and_respects_precedence() {
+        let mut conn = test_conn();
+        let model = |name: &str, round: Option<&str>, square: Option<&str>| ModelRow {
+            dir_path: format!("/lib/{}", name),
+            name: name.into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            total_size_bytes: 100,
+            group_name: Some(name.into()),
+            base_round_mm: round.map(String::from),
+            base_square_mm: square.map(String::from),
+            ..Default::default()
+        };
+        let models = vec![
+            model("round32", Some("32"), None),
+            model("square25", None, Some("25")),
+            model("uncurated", None, None),
+            // Scanner says 99mm round, but the user's override (below) is
+            // what the facet must actually see.
+            model("overridden", Some("99"), None),
+        ];
+        replace_catalog(&mut conn, "/lib", &[], &models, &[], &[], &[]).unwrap();
+        update_model_user_meta(
+            &conn, "/lib/overridden", None, None, None, None, None, None, None, None, None,
+            Some("32".into()), None,
+        )
+        .unwrap();
+
+        let names = |page: GroupPage| -> Vec<String> {
+            page.groups.into_iter().map(|g| g.group_name).collect()
+        };
+
+        // An exact shape narrows to that column, within the ±1mm window.
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, Some("round"), Some(32.3)).unwrap();
+        let mut got = names(page);
+        got.sort();
+        assert_eq!(got, vec!["overridden", "round32"]);
+
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, Some("square"), Some(25.6)).unwrap();
+        assert_eq!(names(page), vec!["square25"]);
+
+        // "any" (no shape) matches whichever curated column is close enough.
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, Some(25.6)).unwrap();
+        assert_eq!(names(page), vec!["square25"]);
+
+        // Outside the window, or the wrong shape entirely: no match — and
+        // the uncurated model never matches regardless (base is curation,
+        // not measurement, so it's never counted as "hidden" the way an
+        // un-mined height/volume filter would be).
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, Some("round"), Some(25.0)).unwrap();
+        assert_eq!(page.total, 0);
+        assert_eq!(page.not_mined_count, 0);
+
+        // The flat search carries the same facet.
+        let flat = search(&conn, "", &[], None, None, None, None, 10, 0, true, Some("round"), Some(32.3)).unwrap();
+        let mut got: Vec<_> = flat.entries.into_iter().map(|e| e.name).collect();
+        got.sort();
+        assert_eq!(got, vec!["overridden", "round32"]);
     }
 
     #[test]

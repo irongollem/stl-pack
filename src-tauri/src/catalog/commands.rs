@@ -1063,6 +1063,8 @@ pub async fn search_catalog(
             limit.min(200),
             offset,
             include_nsfw,
+            geometry.base_shape.as_deref(),
+            geometry.base_mm,
         )?;
         Ok(CatalogSearchResult {
             entries: page.entries,
@@ -1102,6 +1104,8 @@ pub async fn search_catalog_groups(
             limit.min(200),
             offset,
             include_nsfw,
+            geometry.base_shape.as_deref(),
+            geometry.base_mm,
         )?;
         Ok(CatalogGroupResult {
             groups: page.groups,

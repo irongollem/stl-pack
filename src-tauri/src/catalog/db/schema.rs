@@ -475,7 +475,7 @@ mod tests {
         )
         .unwrap();
         rebuild_fts(&conn).unwrap();
-        assert_eq!(search(&conn, "new", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
+        assert_eq!(search(&conn, "new", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
 
         init_schema(&conn).unwrap();
 
@@ -487,7 +487,7 @@ mod tests {
             )
             .unwrap();
         assert!(sql.contains("trigram"));
-        assert_eq!(search(&conn, "new", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "new", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
     }
 
     #[test]
@@ -504,7 +504,7 @@ mod tests {
 
         let (files, models, tags) = sample_rows();
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 2, "grouped search works after self-heal");
     }
 }

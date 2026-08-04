@@ -218,6 +218,11 @@ pub struct GeometryRange {
     pub height_max_mm: Option<f64>,
     pub volume_min_mm3: Option<f64>,
     pub volume_max_mm3: Option<f64>,
+    /// "round" | "square"; anything else (including unset) matches either
+    /// when `base_mm` is set. Filters on CURATED base only — see
+    /// db::search's push_base_where/push_base_having.
+    pub base_shape: Option<String>,
+    pub base_mm: Option<f64>,
 }
 
 /// One configured catalog folder and its indexed footprint — a row in the
