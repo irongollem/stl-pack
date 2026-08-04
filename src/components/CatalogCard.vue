@@ -23,7 +23,7 @@ const measuredSize = computed(() => {
   const { height_mm, volume_mm3 } = props.group;
   const parts: string[] = [];
   if (height_mm != null) parts.push(`${height_mm.toFixed(1)} mm`);
-  if (volume_mm3 != null) parts.push(`${(volume_mm3 / 1000).toFixed(1)} cm³`);
+  if (volume_mm3 != null) parts.push(`${(volume_mm3 / 1000).toFixed(1)} ml`);
   return parts.join(" · ");
 });
 </script>

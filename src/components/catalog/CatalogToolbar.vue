@@ -146,12 +146,12 @@
         <div
           class="font-mono text-[10px] tracking-wide text-base-content/40 uppercase px-1"
         >
-          Volume (cm³)
+          Volume (ml)
         </div>
         <div class="flex items-center gap-1.5 px-1 mb-1.5">
           <NumberInput
             id="geo-volume-min"
-            v-model="volumeMinCm3"
+            v-model="volumeMinMl"
             placeholder="min"
             :min="0"
             class="flex-1 min-w-0"
@@ -159,7 +159,7 @@
           <span class="opacity-40 shrink-0">–</span>
           <NumberInput
             id="geo-volume-max"
-            v-model="volumeMaxCm3"
+            v-model="volumeMaxMl"
             placeholder="max"
             :min="0"
             class="flex-1 min-w-0"
@@ -438,15 +438,15 @@ const {
   openBatchRender,
 } = store;
 
-// The store keeps volume in mm³ (the backend's unit); cm³ is what a person
-// sizing a print actually thinks in, so the inputs convert at the edge.
-const volumeMinCm3 = computed<number | null>({
+// The store keeps volume in mm³ (the backend's unit); ml is what a resin
+// printer's slicer reports, so the inputs convert at the edge.
+const volumeMinMl = computed<number | null>({
   get: () => (volumeMinMm3.value === null ? null : volumeMinMm3.value / 1000),
   set: (v) => {
     volumeMinMm3.value = v === null ? null : v * 1000;
   },
 });
-const volumeMaxCm3 = computed<number | null>({
+const volumeMaxMl = computed<number | null>({
   get: () => (volumeMaxMm3.value === null ? null : volumeMaxMm3.value / 1000),
   set: (v) => {
     volumeMaxMm3.value = v === null ? null : v * 1000;

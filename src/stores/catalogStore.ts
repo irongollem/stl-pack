@@ -226,7 +226,7 @@ export const useCatalogStore = defineStore("catalog", () => {
   /* Range facet: physical height/volume, mined by the geometry job (see
      ModelFileGeometry). Stored canonically in mm/mm³ — the backend's units
      and what search_groups' bounds expect — the toolbar converts volume to
-     cm³ for display since nobody thinks in cubic millimeters. */
+     ml for display (the unit resin slicers already report). */
   const heightMinMm = ref<number | null>(null);
   const heightMaxMm = ref<number | null>(null);
   const volumeMinMm3 = ref<number | null>(null);
