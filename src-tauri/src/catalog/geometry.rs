@@ -14,7 +14,8 @@ use crate::error::AppError;
 
 use super::db;
 use super::stl_facts::{
-    parse_header, FactsAccumulator, StlFacts, COUNT_LEN, EDGE_STATS_MAX_TRIS, HEADER_LEN, RECORD_LEN,
+    estimate_ascii_tri_count, is_ascii_stl_preamble, parse_header, AsciiStlParser,
+    FactsAccumulator, StlFacts, COUNT_LEN, EDGE_STATS_MAX_TRIS, HEADER_LEN, RECORD_LEN,
 };
 
 // A whole number of records per chunk so parsing never straddles a read;
@@ -63,13 +64,23 @@ pub struct GeometryOutcome {
     pub mined: u32,
     /// Skipped without a disk read: the hash already has a complete row.
     pub already_known: u32,
-    /// Unreadable or not a well-formed binary STL; the run continues.
+    /// Unreadable or not a well-formed binary or ASCII STL; the run
+    /// continues.
     pub failed: u32,
 }
 
+// Binary vs. ASCII vs. neither, decided once from the preamble and then
+// fed every subsequent chunk; `Unrecognized` still drains the file for
+// its hash without doing any parsing work.
+enum Parsing {
+    Binary(FactsAccumulator),
+    Ascii(AsciiStlParser),
+    Unrecognized(String),
+}
+
 /// Outer Err: the read failed or the size changed mid-read — no hash is
-/// trustworthy, store nothing. Inner Err: the bytes hashed fine but are
-/// not a well-formed binary STL.
+/// trustworthy, store nothing. Inner Err: the bytes hashed fine but parse
+/// as neither a well-formed binary nor ASCII STL.
 pub(crate) fn stream_mine(
     path: &str,
     edge_cap: u32,
@@ -89,33 +100,54 @@ pub(crate) fn stream_mine(
     }
     hasher.update(&preamble[..got]);
     if got < preamble.len() {
-        // Shorter than any binary STL can be; the whole file is hashed.
+        // Shorter than any binary STL can be, but a whole ASCII one may
+        // fit — and the whole file is already in hand either way.
         if got as u64 != len {
             return Err(std::io::Error::other("file changed while being read"));
         }
-        return Ok((
-            hasher.finalize().to_hex().to_string(),
+        let hash = hasher.finalize().to_hex().to_string();
+        let sniff = &preamble[..got];
+        let result = if is_ascii_stl_preamble(sniff) {
+            let mut parser = AsciiStlParser::new(FactsAccumulator::with_cap(
+                estimate_ascii_tri_count(len),
+                edge_cap,
+            ));
+            match parser.feed(sniff) {
+                Ok(()) => parser.finish(),
+                Err(e) => Err(e),
+            }
+        } else {
             Err(format!(
                 "file is only {got} bytes — too short for a binary STL's 84-byte header+count"
-            )),
-        ));
+            ))
+        };
+        return Ok((hash, result));
     }
 
     let tri_count = parse_header(&preamble).expect("preamble is exactly header+count sized");
-    let expected_len =
-        (HEADER_LEN + COUNT_LEN) as u64 + tri_count as u64 * RECORD_LEN as u64;
-    let mut acc = if tri_count > 0 && len == expected_len {
-        Some(FactsAccumulator::with_cap(tri_count, edge_cap).expect("tri_count checked non-zero"))
+    let expected_len = (HEADER_LEN + COUNT_LEN) as u64 + tri_count as u64 * RECORD_LEN as u64;
+
+    // Binary priority: only a header whose length formula fails to match
+    // falls through to an ASCII sniff, so a binary file whose 80-byte
+    // header happens to start with "solid" still parses as binary.
+    let mut parsing = if tri_count > 0 && len == expected_len {
+        Parsing::Binary(FactsAccumulator::with_cap(tri_count, edge_cap))
+    } else if is_ascii_stl_preamble(&preamble) {
+        let mut parser = AsciiStlParser::new(FactsAccumulator::with_cap(
+            estimate_ascii_tri_count(len),
+            edge_cap,
+        ));
+        match parser.feed(&preamble) {
+            Ok(()) => Parsing::Ascii(parser),
+            Err(e) => Parsing::Unrecognized(e),
+        }
+    } else if tri_count == 0 {
+        Parsing::Unrecognized("binary STL header reports zero triangles".to_string())
     } else {
-        None
-    };
-    let parse_err = if tri_count == 0 {
-        "binary STL header reports zero triangles".to_string()
-    } else {
-        format!(
+        Parsing::Unrecognized(format!(
             "byte length {len} does not match the {tri_count} triangles the header declares \
-             (expected exactly {expected_len} bytes) — not a well-formed binary STL, or an ASCII STL"
-        )
+             (expected exactly {expected_len} bytes)"
+        ))
     };
 
     let mut buf = vec![0u8; STREAM_CHUNK_BYTES];
@@ -137,10 +169,23 @@ pub(crate) fn stream_mine(
         }
         hasher.update(&buf[..filled]);
         total += filled as u64;
-        if let Some(acc) = acc.as_mut() {
-            for record in buf[..filled].chunks_exact(RECORD_LEN) {
-                acc.push_record(record.try_into().expect("chunks_exact yields RECORD_LEN"));
+
+        let mut ascii_err = None;
+        match &mut parsing {
+            Parsing::Binary(acc) => {
+                for record in buf[..filled].chunks_exact(RECORD_LEN) {
+                    acc.push_record(record.try_into().expect("chunks_exact yields RECORD_LEN"));
+                }
             }
+            Parsing::Ascii(parser) => {
+                if let Err(e) = parser.feed(&buf[..filled]) {
+                    ascii_err = Some(e);
+                }
+            }
+            Parsing::Unrecognized(_) => {}
+        }
+        if let Some(e) = ascii_err {
+            parsing = Parsing::Unrecognized(e);
         }
     }
     if total != len {
@@ -150,7 +195,12 @@ pub(crate) fn stream_mine(
     }
 
     let hash = hasher.finalize().to_hex().to_string();
-    Ok((hash, acc.map(FactsAccumulator::finish).ok_or(parse_err)))
+    let result = match parsing {
+        Parsing::Binary(acc) => Ok(acc.finish()),
+        Parsing::Ascii(parser) => parser.finish(),
+        Parsing::Unrecognized(msg) => Err(msg),
+    };
+    Ok((hash, result))
 }
 
 /// Streams every un-mined loose STL once, hashing and accumulating facts
@@ -529,12 +579,11 @@ mod tests {
         fs::remove_dir_all(&dir_b).ok();
     }
 
-    /// A 10mm axis-aligned cube's 12 outward-wound triangles, binary-STL
-    /// encoded — mirrors stl_facts::tests::cube_triangles (duplicated
-    /// locally since that helper is private to its own module). Only its
-    /// triangle count (12, bigger than a cap of 1) matters to the tests
-    /// below, not its exact geometry.
-    fn cube_stl() -> Vec<u8> {
+    /// A 10mm axis-aligned cube's 12 outward-wound triangles — mirrors
+    /// stl_facts::tests::cube_triangles (duplicated locally since that
+    /// helper is private to its own module). Shared by the binary and
+    /// ASCII encodings below so both twins describe the same solid.
+    fn cube_triangles() -> Vec<[(f32, f32, f32); 3]> {
         let a = (0.0, 0.0, 0.0);
         let b = (10.0, 0.0, 0.0);
         let c = (10.0, 10.0, 0.0);
@@ -543,7 +592,7 @@ mod tests {
         let f = (10.0, 0.0, 10.0);
         let g = (10.0, 10.0, 10.0);
         let h = (0.0, 10.0, 10.0);
-        build_binary_stl(&[
+        vec![
             [a, c, b],
             [a, d, c],
             [e, f, g],
@@ -556,7 +605,214 @@ mod tests {
             [a, e, h],
             [b, c, g],
             [b, g, f],
-        ])
+        ]
+    }
+
+    // Only its triangle count (12, bigger than a cap of 1) matters to the
+    // cap tests below, not its exact geometry.
+    fn cube_stl() -> Vec<u8> {
+        build_binary_stl(&cube_triangles())
+    }
+
+    fn ascii_cube_stl() -> Vec<u8> {
+        let mut text = String::from("solid cube\n");
+        for tri in cube_triangles() {
+            text.push_str("facet normal 0 0 0\nouter loop\n");
+            for (x, y, z) in tri {
+                text.push_str(&format!("vertex {x} {y} {z}\n"));
+            }
+            text.push_str("endloop\nendfacet\n");
+        }
+        text.push_str("endsolid cube\n");
+        text.into_bytes()
+    }
+
+    #[test]
+    fn ascii_cube_mines_the_same_facts_as_its_binary_twin() {
+        let dir = test_dir("ascii_cube");
+        let path = dir.join("cube.stl");
+        fs::write(&path, ascii_cube_stl()).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "cube.stl".into(),
+            extension: "stl".into(),
+            size_bytes: ascii_cube_stl().len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            outcome,
+            GeometryOutcome {
+                mined: 1,
+                already_known: 0,
+                failed: 0,
+            }
+        );
+
+        let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].tri_count, 12);
+        assert_eq!(facts[0].x_mm, 10.0);
+        assert_eq!(facts[0].y_mm, 10.0);
+        assert_eq!(facts[0].z_mm, 10.0);
+        assert!(
+            (facts[0].volume_mm3 - 1000.0).abs() < 1e-3,
+            "got {}",
+            facts[0].volume_mm3
+        );
+        assert_eq!(facts[0].open_edges, Some(0));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_ascii_counts_as_failed_but_still_stores_its_hash() {
+        let dir = test_dir("ascii_malformed");
+        let path = dir.join("bad.stl");
+        let bad = b"solid bad\nfacet normal 0 0 1\nouter loop\n\
+                    vertex 0 0 0\nvertex not-a-number 0 0\nvertex 0 1 0\n\
+                    endloop\nendfacet\nendsolid bad\n";
+        fs::write(&path, bad).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "bad.stl".into(),
+            extension: "stl".into(),
+            size_bytes: bad.len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            outcome,
+            GeometryOutcome {
+                mined: 0,
+                already_known: 0,
+                failed: 1,
+            }
+        );
+
+        assert!(db::known_hash(&conn, &path.to_string_lossy()).is_some());
+        let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
+        assert!(facts.is_empty(), "a malformed file must not store a geometry row");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn binary_header_starting_with_solid_still_parses_as_binary() {
+        let dir = test_dir("solid_binary");
+        let path = dir.join("tri.stl");
+        // Overwrites bytes of the zeroed 80-byte header, not the trailing
+        // triangle count, so the binary length formula still holds.
+        let mut bytes = one_triangle_stl();
+        bytes[0..6].copy_from_slice(b"solid ");
+        fs::write(&path, &bytes).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "tri.stl".into(),
+            extension: "stl".into(),
+            size_bytes: bytes.len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            outcome,
+            GeometryOutcome {
+                mined: 1,
+                already_known: 0,
+                failed: 0,
+            }
+        );
+
+        let facts = db::model_geometry(&conn, &dir.to_string_lossy()).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].tri_count, 1);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ascii_zero_facet_file_counts_as_failed() {
+        let dir = test_dir("ascii_zero_facet");
+        let path = dir.join("empty.stl");
+        fs::write(&path, b"solid x\nendsolid x\n").unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "empty.stl".into(),
+            extension: "stl".into(),
+            size_bytes: b"solid x\nendsolid x\n".len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let outcome = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            outcome,
+            GeometryOutcome {
+                mined: 0,
+                already_known: 0,
+                failed: 1,
+            }
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
