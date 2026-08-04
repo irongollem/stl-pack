@@ -1,14 +1,5 @@
 //! Easter-egg integration with minihoard, Plinth's sibling CLI for
-//! fetching a MyMiniFactory library. If the binary is installed on this
-//! machine a "Minihoard" entry quietly appears in the sidebar; if not,
-//! Plinth never mentions it. Deliberately undocumented on Plinth's side —
-//! only minihoard's own docs describe the integration.
-//!
-//! The integration is a thin console, not an API: minihoard speaks human
-//! text (no JSON output mode), so Plinth runs a WHITELISTED subcommand and
-//! streams its stdout/stderr lines to the webview verbatim. Parsing that
-//! text would couple us to a tool that versions independently; showing it
-//! doesn't.
+//! fetching a MyMiniFactory library — no binary installed, no sidebar entry.
 
 use crate::error::AppError;
 use once_cell::sync::Lazy;
@@ -27,14 +18,13 @@ use uuid::Uuid;
 pub struct MinihoardInfo {
     pub path: String,
     pub version: String,
-    /// Whether this build speaks the `--json` protocol (>= 0.4.0). Below that,
-    /// the view falls back to the legacy raw console with an "update" hint —
-    /// the typed library UI has nothing to talk to.
+    /// Whether this build speaks the `--json` protocol (>= 0.4.0); below
+    /// that, only the legacy raw console works.
     pub supports_json: bool,
 }
 
-/// The first minihoard version that emits the NDJSON contract this module
-/// parses (`status`/`list`/`get --json`). The frontend gates the rich UI on it.
+/// The first minihoard version that speaks the `--json` protocol this
+/// module parses.
 const MIN_JSON_VERSION: (u32, u32) = (0, 4);
 
 /// Parse a `major.minor[.patch]` string far enough to compare against
@@ -74,14 +64,11 @@ pub struct MinihoardFinished {
 /// download dirs), and the console UI shows a single stream anyway.
 static ACTIVE_RUN: Lazy<Mutex<Option<(String, Child)>>> = Lazy::new(|| Mutex::new(None));
 
-/// Subcommands the console may launch. Everything here is either read-only
-/// or downloads into minihoard's own configured directories; account
-/// mutation (login/logout/configure) stays in the real terminal where
-/// minihoard can prompt interactively. `sync-cookie` is the one credential
-/// command allowed through: it never prompts (it reads the user's own
-/// browser cookie store and prints fallback guidance on failure), which is
-/// exactly what makes it safe to run with stdin nulled. `set-cookie` stays
-/// out — it reads the pasted secret from stdin.
+/// Subcommands the console may launch: read-only or download-only. Account
+/// mutation (login/logout/configure) needs an interactive terminal, so it's
+/// excluded; `sync-cookie` is the one credential command allowed through
+/// because it never prompts (unlike `set-cookie`, which reads a pasted
+/// secret from stdin).
 const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "list",
     "download",
@@ -329,23 +316,11 @@ fn validated_subcommand(args: &[String]) -> Result<String, AppError> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Typed integration (minihoard >= 0.4.0 `--json`)
-//
-// Everything above this line is the legacy raw-console path, kept for the
-// debug log panel and the non-interactive `sync-cookie` button. Everything
-// below drives minihoard as structured data: `status`/`list` are
-// request/response, downloads stream typed events. The boundary stays a
-// shelled-out binary (see docs/MINIHOARD.md) — Plinth never carries MMF
-// credentials or the Cloudflare-impersonating network stack.
-// ---------------------------------------------------------------------------
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Errors from the typed commands, shaped so the frontend branches on `kind`
-/// (a discriminated union in the generated bindings), never on message text —
-/// the exact coupling the old console's hardcoded English strings created.
+/// Errors from the typed commands, shaped as a `kind` discriminated union
+/// so callers branch on the kind, never on message text.
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum MinihoardError {
@@ -543,10 +518,10 @@ pub async fn minihoard_object(
     .map_err(|e| MinihoardError::Failed(format!("object task failed: {e}")))?
 }
 
-/// Streaming status for a typed download run, shaped like `BaseCutStatus`: a
-/// `Started`, a run of per-object events, then exactly one terminal
-/// (`Finished` | `Failed` | `Cancelled`). User cancel is `Cancelled`, never
-/// `Failed`. Every variant carries `job_id` so the queue UI can route it.
+/// Streaming status for a typed download run: one `Started`, a run of
+/// per-object events, then exactly one terminal (`Finished` | `Failed` |
+/// `Cancelled`). User cancel is `Cancelled`, never `Failed`; every variant
+/// carries `job_id`.
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub enum MinihoardDownloadStatus {
     Started(MdStarted),
@@ -562,8 +537,7 @@ pub enum MinihoardDownloadStatus {
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct MdStarted {
     pub job_id: String,
-    /// Number of objects requested — the queue can render rows before the first
-    /// `object_start` arrives.
+    /// Number of objects requested, available before the first `object_start`.
     pub total: usize,
 }
 
@@ -864,9 +838,6 @@ pub async fn cancel_minihoard_download(
 mod tests {
     use super::*;
 
-    /// The console must stay read-only + downloads: credential mutation
-    /// (login/logout/configure) and self-update need a real terminal, and
-    /// nothing the webview sends may smuggle another subcommand through.
     #[test]
     fn only_safe_subcommands_pass_the_whitelist() {
         for allowed in [
@@ -890,8 +861,6 @@ mod tests {
         assert!(validated_subcommand(&[]).is_err());
     }
 
-    /// The version gate is what keeps the typed UI from talking to a CLI that
-    /// can't answer. 0.4.0 is the floor; anything below or unparseable is out.
     #[test]
     fn json_support_gates_on_0_4() {
         assert!(!version_supports_json("0.3.9"));
@@ -903,8 +872,6 @@ mod tests {
         assert!(!version_supports_json(""));
     }
 
-    /// The `kind` string from the CLI is the contract; this mapping is what lets
-    /// the frontend show the cookie banner without reading any message text.
     #[test]
     fn error_events_map_to_typed_kinds() {
         let of = |kind: &str| {
