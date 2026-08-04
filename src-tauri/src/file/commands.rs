@@ -24,9 +24,9 @@ static ACTIVE_COMPRESSIONS: Lazy<Mutex<HashMap<String, Arc<AtomicBool>>>> =
 /// Stage the whole draft into the release directory in CANONICAL layout
 /// (Model/Supported|Unsupported[/Variant], sidecar per leaf — see
 /// file/stage.rs), then record every leaf in release.json in one write.
-/// One command for the whole batch on purpose: members sharing a
-/// canonical leaf must merge (poses become file-level metadata), and a
-/// per-model command would race its own release.json read-modify-write.
+/// One command for the whole batch on purpose: members sharing a canonical
+/// leaf must merge (poses become file-level metadata), and the old
+/// per-model command raced its own release.json read-modify-write.
 #[tauri::command]
 #[specta::specta]
 pub async fn add_models(
@@ -98,10 +98,10 @@ pub async fn list_release_drafts(
     Ok(drafts)
 }
 
-/// Rehydrate a WIP release: release.json only carries {id, path} per
-/// model (ModelReference), so the rich curation (designer/pose/variant/
-/// tags/file_poses…) is read back from each model's own model.json
-/// sidecar — the same file add_models staged it to.
+/// Rehydrate a WIP release for the builder UI: release.json only carries
+/// {id, path} per model (ModelReference), so the rich curation the UI needs
+/// (designer/pose/variant/tags/file_poses…) is read back from each model's
+/// own model.json sidecar — the same file add_models staged it to.
 #[tauri::command]
 #[specta::specta]
 pub async fn load_release_draft(release_dir: String) -> Result<(Release, Vec<StlModel>), AppError> {

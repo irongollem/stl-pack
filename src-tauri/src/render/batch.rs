@@ -30,7 +30,8 @@ pub fn batch_render_active() -> bool {
         .unwrap_or(false)
 }
 
-/// rotation is the stored "x,y,z" or null → 90,0,0.
+/// One model of the batch, as the frontend selected it (a RenderCandidate
+/// the user confirmed). rotation is the stored "x,y,z" or null → 90,0,0.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct BatchRenderTarget {
     pub dir_path: String,

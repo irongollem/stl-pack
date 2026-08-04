@@ -22,11 +22,23 @@ pub fn materialize_base_cut_script(app_handle: &AppHandle) -> Result<PathBuf, Ap
     crate::render::engine::materialize_embedded_script(app_handle, "base_cut.py", BASE_CUT_SCRIPT)
 }
 
-/// Rim fate for a scatter piece that straddles a cutter's rim — see
-/// docs/BASECUTTER.md's pinned `BaseCutJob.scatter_rim` for the full
-/// Keep/Slice contract. A bare lowercase JSON string (`"keep"` /
-/// `"slice"`), matching base_cut.py's `job.get("scatter_rim", "keep")`
-/// read verbatim.
+/// Rim fate for a scatter piece (a loose shell in the landscape — see
+/// docs/SCATTER.md "Pieces are placed as LOOSE SHELLS") that straddles a
+/// cutter's rim, per docs/BASECUTTER.md's pinned `BaseCutJob.scatter_rim`.
+/// A bare lowercase JSON STRING (`"keep"` / `"slice"`), not a tagged
+/// object like `CutterKind` — matches base_cut.py's `job.get("scatter_rim",
+/// "keep")` verbatim.
+///
+/// `Keep` (the default — see `Default` below): per cut, only the terrain
+/// shell is intersected with the cutter prism; separately, every piece
+/// whose centroid lies inside that placement's derived cut footprint is
+/// unioned in WHOLE and may overhang the rim like real hand-made scenic
+/// basing. `Slice`: nearby piece copies are clipped per cut and appended as
+/// loose slicer-friendly shells — a piece straddling a rim is sliced flush
+/// without Boolean-unioning the full scattered landscape first.
+/// A landscape with nothing scattered onto it (a plain generated bake, a
+/// designer sculpt) is a single shell, so both variants behave
+/// identically on it — see base_cut.py's `separate_into_shells`.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum ScatterRim {
@@ -55,15 +67,26 @@ pub struct BaseCutJob {
     #[serde(default)]
     pub topper_mm: Option<f64>,
     /// See `ScatterRim`. `#[serde(default)]` is protocol hygiene for
-    /// deserializing hand-edited/test JSON — `BaseCutJob` is never built
-    /// without deciding this field, so Rust always serializes it explicitly.
+    /// DESERIALIZING a JSON blob Rust didn't produce itself (a hand-edited
+    /// job file, a minimal test fixture) — it is not there to support any
+    /// particular vintage of file. Rust is the ground truth for what
+    /// actually reaches the script: `BaseCutJob` is never constructed
+    /// without deciding this field (it's not an `Option`), so every job
+    /// Rust serializes carries an explicit `"scatter_rim"` key, never an
+    /// absent one — see `job_always_serializes_scatter_rim_explicitly`
+    /// below, which pins that as the one ground truth so the two defaults
+    /// (this one, and base_cut.py's own lenient `job.get("scatter_rim",
+    /// "keep")` read) can't drift silently against each other.
     #[serde(default)]
     pub scatter_rim: ScatterRim,
-    /// When true, base_cut.py imports the landscape's `.glb` twin instead
-    /// of the bare STL and exports a `.glb` twin alongside each cut STL
-    /// (`CutDone.glb` below). `false` (the default) is byte-identical to
-    /// pre-GLB behavior. See docs/BASECUTTER.md "VTT GLB export" for the
-    /// full contract.
+    /// VTT GLB export design doc "Base cut": when true, base_cut.py imports
+    /// the landscape's `.glb` twin (swap extension of `landscape_path`)
+    /// instead of the bare STL, paints/repairs colors through every cut,
+    /// and exports a `.glb` twin alongside each cut STL (`CutDone.glb`
+    /// below). `false` (the default) is today's behavior EXACTLY — see
+    /// base_cut.py's own docstring "glb mode" section for the full
+    /// contract. `#[serde(default)]` so old job files/frontends without
+    /// the key keep working.
     #[serde(default)]
     pub glb: bool,
 }

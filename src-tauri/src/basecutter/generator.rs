@@ -237,12 +237,13 @@ pub struct GlowSpec {
     pub strength: f64,
 }
 
-/// Vertex-color/material palette for the landscape's GLB twin. Hex
-/// strings are sRGB; the script converts to linear only where a shader
-/// node's `default_value` needs it (the "Col" corner attribute itself
-/// takes sRGB directly via `.color_srgb`). `glow` is only set for
-/// terrains that actually want an emissive material slot — everything
-/// else gets just the base terrain materials.
+/// Vertex-color/material palette for the landscape's GLB twin (VTT GLB
+/// export design doc: "Palette contract"). Hex strings are sRGB; the
+/// script converts to linear only where a shader node's `default_value`
+/// needs it (the "Col" corner attribute itself takes sRGB directly via
+/// `.color_srgb`). `glow` is only set for terrains that actually want an
+/// emissive material slot (stlpack_glow) — everything else gets just
+/// stlpack_terrain + stlpack_base.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct MaterialPalette {
     /// Dominant terrain color.
@@ -319,8 +320,8 @@ pub struct LandscapeParams {
 }
 
 /// A named, ready-to-generate parameter set (docs/BASECUTTER.md: "Presets
-/// are parameter sets") — a new terrain style is a new row here, not a
-/// new pipeline.
+/// are parameter sets" — the cutter-library move again, a new terrain
+/// style is a new row here, not a new pipeline).
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct GeneratorPreset {
     pub id: String,

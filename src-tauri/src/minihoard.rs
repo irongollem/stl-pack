@@ -18,8 +18,9 @@ use uuid::Uuid;
 pub struct MinihoardInfo {
     pub path: String,
     pub version: String,
-    /// Whether this build speaks the `--json` protocol (>= 0.4.0); below
-    /// that, only the legacy raw console works.
+    /// Whether this build speaks the `--json` protocol (>= 0.4.0). Below that,
+    /// the view falls back to the legacy raw console with an "update" hint —
+    /// the typed library UI has nothing to talk to.
     pub supports_json: bool,
 }
 
@@ -319,8 +320,9 @@ fn validated_subcommand(args: &[String]) -> Result<String, AppError> {
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// Errors from the typed commands, shaped as a `kind` discriminated union
-/// so callers branch on the kind, never on message text.
+/// Errors from the typed commands, shaped so the frontend branches on `kind`
+/// (a discriminated union in the generated bindings), never on message text —
+/// the exact coupling the old console's hardcoded English strings created.
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum MinihoardError {
@@ -518,10 +520,10 @@ pub async fn minihoard_object(
     .map_err(|e| MinihoardError::Failed(format!("object task failed: {e}")))?
 }
 
-/// Streaming status for a typed download run: one `Started`, a run of
-/// per-object events, then exactly one terminal (`Finished` | `Failed` |
-/// `Cancelled`). User cancel is `Cancelled`, never `Failed`; every variant
-/// carries `job_id`.
+/// Streaming status for a typed download run, shaped like `BaseCutStatus`: a
+/// `Started`, a run of per-object events, then exactly one terminal
+/// (`Finished` | `Failed` | `Cancelled`). User cancel is `Cancelled`, never
+/// `Failed`. Every variant carries `job_id` so the queue UI can route it.
 #[derive(Serialize, Deserialize, Debug, Clone, Type, Event)]
 pub enum MinihoardDownloadStatus {
     Started(MdStarted),
@@ -537,7 +539,8 @@ pub enum MinihoardDownloadStatus {
 #[derive(Serialize, Deserialize, Debug, Clone, Type)]
 pub struct MdStarted {
     pub job_id: String,
-    /// Number of objects requested, available before the first `object_start`.
+    /// Number of objects requested — the queue can render rows before the first
+    /// `object_start` arrives.
     pub total: usize,
 }
 

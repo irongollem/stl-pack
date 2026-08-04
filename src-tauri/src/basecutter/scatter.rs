@@ -33,11 +33,17 @@ pub fn materialize_scatter_script(app_handle: &AppHandle) -> Result<PathBuf, App
 }
 
 /// A generated piece kind — the only source scatter can actually place
-/// today (bundled/user assets are a later phase). Serializes lowercase
-/// ("pebble"/"rock"/"twig"/"grass"/"mushroom") to match
-/// scatter_landscape.py's generated-kind set exactly. `Mushroom` is the
-/// one kind that deliberately stands upright (stem down) rather than
-/// lying flat like every other non-round generated kind.
+/// today (docs/SCATTER.md "Execution phases": bundled/user assets are S4).
+/// Serializes lowercase ("pebble"/"rock"/"twig"/"grass"/"mushroom")
+/// to match scatter_landscape.py's generated-kind set exactly. `Pebble`/
+/// `Rock` are built as noise-displaced icospheres and still live in that
+/// script's `CANONICAL_MM` table; `Twig`/`Grass`/`Mushroom` are
+/// swept/extruded solids (see `build_twig_piece`/
+/// `build_grass_piece`/`build_mushroom_piece` there) — same dispatch shape,
+/// different geometry recipe per kind. `Mushroom` is the one kind that
+/// deliberately stands upright (stem down) rather than lying flat — see
+/// scatter_landscape.py's "lies_flat" comment block for why every other
+/// non-round generated kind lies flat and this one doesn't.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum GeneratedPieceKind {
@@ -49,10 +55,14 @@ pub enum GeneratedPieceKind {
 }
 
 /// One piece's source — externally tagged with NO `#[serde(tag = ...)]`
-/// (Rust's default enum-with-struct-variants shape): `{"Generated":
-/// {"kind": "pebble"|"rock"}}` or `{"Asset": {"id": "..."}}`. `Asset` is
-/// a recognized, well-formed part of the shape today even though the
-/// script fails it gracefully (not implemented yet).
+/// (Rust's default enum-with-struct-variants shape), matching
+/// docs/SCATTER.md's pinned `PieceChoice.piece` shape verbatim:
+/// `{"Generated": {"kind": "pebble"|"rock"}}` or `{"Asset": {"id": "..."}}`.
+/// scatter_landscape.py's `validate_pieces` docstring calls this out by
+/// name: "matches Rust's default serde derive (no #[serde(tag=...)])".
+/// `Asset` is a recognized, well-formed part of the shape today even though
+/// the script fails it gracefully (S4 not implemented yet) — see
+/// `validate_pieces` in scatter_landscape.py.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub enum ScatterPieceSource {
     Generated { kind: GeneratedPieceKind },
@@ -92,22 +102,35 @@ pub struct ScatterAsset {
     pub path: String,
     pub footprint_mm: f64,
     pub height_mm: f64,
-    /// The sRGB hex a placed instance of this asset paints its "Col"
-    /// corner attribute with — a curated, muted tabletop tone per bundled
-    /// id, or `"#9a9a9a"` for every user-library asset (no curation pass
-    /// has looked at it, so neutral grey is the honest default).
+    /// The sRGB hex a placed instance of this asset paints its "Col" corner
+    /// attribute with (VTT GLB export design doc "Scatter") — a curated,
+    /// muted tabletop tone per bundled id (see `scatter_assets::BUNDLED_ASSETS`),
+    /// or `"#9a9a9a"` for every user-library asset (no curation pass has
+    /// looked at it, so a neutral grey is the honest default rather than a
+    /// guess). Threaded into a scatter job's `asset_colors` map the same
+    /// way `path` is threaded into `asset_paths` — see
+    /// `scatter_assets::resolve_asset_color`.
     pub color: String,
-    /// `None` for every bundled asset (curated and normalized, never
-    /// warns) and for a user-library piece under the heuristic;
-    /// `Some(message)` is advisory only — the piece is still usable,
-    /// never dropped from the returned list on this account alone. See
-    /// `scatter_assets::MINI_FOOTPRINT_WARNING_MM` for the exact threshold.
+    /// Additive to the pinned shape (docs/SCATTER.md "Scale anchor": "the
+    /// user-library scan applies the same lens: it warns (not blocks) when
+    /// a piece's footprint suggests it's a mini, not debris"). `None` for
+    /// every bundled asset (curated and normalized, never warns) and for a
+    /// user-library piece under the heuristic; `Some(message)` is advisory
+    /// only — the piece is still usable, never dropped from the returned
+    /// list on this account alone. See
+    /// `scatter_assets::MINI_FOOTPRINT_WARNING_MM` for the exact threshold
+    /// and reasoning, and `scatter_assets::unparseable_stl_warning` for the
+    /// other case this field carries (a file that failed to parse at all).
     pub warning: Option<String>,
 }
 
-/// Bundled scatter asset set — see `scatter_assets::BUNDLED_ASSETS` for
-/// the pinned id/label/footprint/height/license table this reads. Each
-/// asset is materialized lazily on every call.
+/// Bundled scatter asset set (docs/SCATTER.md "Bundled assets"): S4a
+/// curation output — see `scatter_assets::BUNDLED_ASSETS` for the pinned
+/// id/label/footprint/height/license table this reads, and its own doc
+/// comment for how that table is kept from drifting off the curated
+/// manifest.json shipped alongside the STLs. Each asset is materialized
+/// lazily (same as the embedded scripts) on every call, so a stale
+/// materialized copy can never survive a rebuild.
 #[tauri::command]
 #[specta::specta]
 pub fn get_scatter_assets(app_handle: AppHandle) -> Result<Vec<ScatterAsset>, AppError> {
@@ -136,13 +159,14 @@ fn default_clump() -> f64 {
     0.0
 }
 
-/// Scatter placement parameters. Defaults mirror scatter_landscape.py's
-/// `scatter()`'s own `params.get(key, default)` fallbacks exactly, so a
-/// partial JSON (from a preset or an older UI build) behaves identically
-/// whether the default is applied here or in the script. `seed`,
-/// `density_per_dm2`, and `pieces` have no script-side default (missing
-/// keys raise `KeyError`/`ValueError` there), so they stay required here
-/// too.
+/// Scatter placement parameters — see docs/SCATTER.md "Pinned interfaces"
+/// and "Scale anchor: 28-32mm heroic". Defaults mirror
+/// scatter_landscape.py's `scatter()`'s own `params.get(key, default)`
+/// fallbacks exactly, so a partial JSON (from a preset or an older UI build)
+/// behaves identically whether the default is applied here or in the
+/// script. `seed`, `density_per_dm2`, and `pieces` have no script-side
+/// default (missing keys raise `KeyError`/`ValueError` there), so they stay
+/// required here too.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub struct ScatterParams {
     pub seed: u32,
@@ -159,29 +183,34 @@ pub struct ScatterParams {
     pub max_slope_deg: f64,
     #[serde(default = "default_edge_margin_mm")]
     pub edge_margin_mm: f64,
-    /// Clustering bias for candidate placement, `0.0..=1.0`. `0.0` (the
-    /// default) is the original even jittered-grid behavior EXACTLY — no
-    /// warp step runs at all, so a job that omits this key places
-    /// identically to before it existed. Toward `1.0`, candidates are
-    /// pulled toward a handful of seeded cluster centers instead of
-    /// staying evenly spread, so pieces read as tufts/patches rather than
-    /// a uniform scatter.
+    /// Clustering bias for candidate placement, `0.0..=1.0` (see
+    /// scatter_landscape.py's `build_candidates`/`_clump_cluster_centers`
+    /// for the algorithm this drives). `0.0` (the default) is the original
+    /// even jittered-grid behavior EXACTLY — no warp step runs at all, so a
+    /// job that omits this key places identically to before it existed.
+    /// Toward `1.0`, candidates are pulled toward a handful of seeded
+    /// cluster centers instead of staying evenly spread, so pieces read as
+    /// tufts/patches (grass clumps, forest-floor drifts) rather than a
+    /// uniform scatter. Deterministic and per-layer, same as every other
+    /// knob here — see `validate_layer` for the range check.
     #[serde(default = "default_clump")]
     pub clump: f64,
     pub pieces: Vec<PieceChoice>,
 }
 
 /// A scatter job, as sent from the frontend and forwarded to
-/// scatter_landscape.py verbatim — unlike `BaseCutJob`, no field is
-/// renamed: the script reads `job["landscape_path"]`, `job["out_path"]`,
-/// `job["layers"]` directly.
+/// scatter_landscape.py verbatim — unlike `BaseCutJob`, no field is renamed:
+/// the script reads `job["landscape_path"]`, `job["out_path"]`,
+/// `job["layers"]` directly (see its module docstring's job JSON example).
 ///
-/// `layers` is a STACK, not a single pass: each entry is a full
-/// `ScatterParams`, and each places independently onto the TERRAIN from
-/// its own seed — adding or removing a layer never moves another layer's
-/// pieces. Must be non-empty; `start_scatter`/`validate_scatter_job`
-/// reject an empty stack before any Blender work. One layer is the
-/// common case.
+/// `layers` is a STACK, not a single pass (docs/SCATTER.md "Layers — build
+/// the debris up, peel it back"): each entry is a full `ScatterParams`, and
+/// each places independently onto the TERRAIN from its own seed — adding or
+/// removing a layer never moves another layer's pieces. Must be non-empty;
+/// `start_scatter`/`validate_scatter_job` reject an empty stack before any
+/// Blender work, same as an empty `pieces` list within one layer. One layer
+/// is the common case. This replaces the old `params: ScatterParams` shape
+/// outright — no compat branch, per house rule (old === redundant).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub struct ScatterJob {
     pub landscape_path: String,

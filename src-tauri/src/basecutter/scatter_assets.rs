@@ -234,11 +234,12 @@ const BUNDLED_ASSETS: &[BundledAsset] = &[
 #[cfg(test)]
 const MANIFEST_JSON: &str = include_str!("../../resources/scatter/manifest.json");
 
-/// The curated CREDITS.md, embedded verbatim. Every bundled piece is CC0
-/// (nothing legally owed) EXCEPT the CC BY-SA 4.0 leaf set, whose
-/// attribution the file carries. Exposed as its own command rather than
-/// folded into `ScatterAsset` since it's one shared document, not a
-/// per-asset field.
+/// The curated CREDITS.md, embedded verbatim (docs/SCATTER.md "Bundled
+/// assets": "listed in an in-app credits panel + CREDITS file when
+/// attribution is owed"). Every bundled piece is CC0 (nothing legally
+/// owed) EXCEPT the CC BY-SA 4.0 leaf set, whose attribution the file
+/// carries — see the file itself. Exposed as its own command rather than folded into
+/// `ScatterAsset` since it's one shared document, not a per-asset field.
 #[tauri::command]
 #[specta::specta]
 pub fn get_scatter_credits() -> String {

@@ -22,6 +22,8 @@ pub enum CutterKind {
 /// A magnet as it will be pocketed into a plinth's boss. Drawn from the
 /// user's magnet inventory (app settings), never from a hardcoded
 /// base-size->magnet table — pairing is a suggestion rule over inventory.
+/// Consumed by `basecutter::job::BaseCutJob` (phase 3), which serializes it
+/// straight into a placement's `magnet` field for base_cut.py.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct MagnetSpec {
     pub diameter_mm: f64,
@@ -32,6 +34,7 @@ pub struct MagnetSpec {
 /// Tapered plinth profile. Defaults are caliper-measured off a real 32 mm
 /// round base (32 -> 30 mm over 3.7 mm tall, 1.2 mm wall — see
 /// docs/BASECUTTER.md "The plinth"), not arbitrary round numbers.
+/// Carried one-per-job by `basecutter::job::BaseCutJob` (phase 3).
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct PlinthParams {
     pub height_mm: f64,
@@ -59,9 +62,11 @@ impl Default for PlinthParams {
     }
 }
 
-/// One cut instance: a cutter positioned on the landscape. `name` is a
-/// user-facing label echoed back in progress events so they can name the
-/// base, not just its index.
+/// One cut instance: a cutter positioned on the landscape. Mirrors a job's
+/// `placements[]` entry (see base_cut.py's docstring) — `name` is a
+/// user-facing label echoed back in the script's `CUT_*` tokens so progress
+/// events can name the base, not just its index.
+/// Carried as a `Vec<Placement>` by `basecutter::job::BaseCutJob` (phase 3).
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct Placement {
     pub cutter: CutterKind,
@@ -204,9 +209,10 @@ pub fn get_cutter_library() -> Vec<Cutter> {
     seed_library()
 }
 
-/// The caliper-measured plinth profile, as a command so the frontend's
-/// defaults come from this one Rust value instead of a hand-copied
-/// literal that could drift from it.
+/// The caliper-measured plinth profile (see `PlinthParams::default`'s doc
+/// comment) as a command, so the frontend's "new job" defaults come from
+/// this one Rust value instead of a hand-copied literal that could drift
+/// from it.
 #[tauri::command]
 #[specta::specta]
 pub fn get_plinth_defaults() -> PlinthParams {

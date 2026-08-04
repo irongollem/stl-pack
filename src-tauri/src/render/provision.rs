@@ -536,7 +536,8 @@ async fn run_provision_job(app_handle: AppHandle, job_id: String, cancel: Arc<No
     let _ = event.emit(&app_handle);
 }
 
-/// Detection plus the version verdict, in one call.
+/// Detection plus the version verdict, in one call the first-run dialog,
+/// Settings, and the Render view all share.
 #[tauri::command]
 #[specta::specta]
 pub async fn check_blender() -> Result<BlenderCheck, AppError> {
