@@ -447,6 +447,31 @@
                 placeholder="25 or 50x25"
               />
             </label>
+            <div
+              v-if="baseSuggestion"
+              class="col-span-2 flex items-center gap-2 rounded-lg border border-base-content/10 bg-base-200/60 px-2.5 py-1.5"
+            >
+              <span
+                class="font-mono text-[10.5px] text-base-content/60 flex-1 min-w-0 truncate"
+              >
+                Detected: {{ baseSuggestion.shape }}
+                {{ baseSuggestion.mm.toFixed(1) }} mm base
+              </span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs px-2 text-[10px]"
+                @click="dismissBaseSuggestion"
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-xs px-2 text-[10px] text-primary"
+                @click="applyBaseSuggestion"
+              >
+                Apply
+              </button>
+            </div>
             <label class="flex flex-col gap-0.5 col-span-2">
               <span class="font-mono text-[9px] text-base-content/40"
                 >RELEASE</span
@@ -789,6 +814,12 @@
             {{ geometryTotalTriCount.toLocaleString() }} tris
           </div>
           <div
+            v-if="scaleSanityWarning"
+            class="font-mono text-[10px] text-base-content/40 mb-1.5"
+          >
+            {{ scaleSanityWarning }}
+          </div>
+          <div
             v-for="g in modelGeometry"
             :key="g.file_name"
             class="flex items-center gap-2 font-mono text-[11px] text-base-content/60 py-0.5"
@@ -970,6 +1001,8 @@ const {
   geometryTallestMm,
   geometryTotalVolumeMl,
   geometryTotalTriCount,
+  baseSuggestion,
+  scaleSanityWarning,
   supportTabs,
   activeSupport,
   variantsInTab,
@@ -1013,6 +1046,8 @@ const {
   addTag,
   removeTag,
   saveMetadata,
+  applyBaseSuggestion,
+  dismissBaseSuggestion,
   refreshSidecars,
   cleanUpSelectedGroup,
   addToDraftRelease,

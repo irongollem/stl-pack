@@ -395,6 +395,25 @@ pub struct ModelFileGeometry {
     pub open_edges: Option<u32>,
 }
 
+/// A base-size suggestion derived from mined geometry: every mined file in
+/// the model that detected a base agreed on shape and mm (see
+/// db::model_base_suggestion). "round" | "square"; mm rounded to 1 decimal.
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct BaseSuggestion {
+    pub shape: String,
+    pub mm: f64,
+}
+
+/// What the drawer's geometry section needs in one round trip: the per-file
+/// listing plus any model-level base suggestion (None when files disagree,
+/// nothing detected, the model is already curated, or the suggestion was
+/// dismissed).
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct ModelGeometryDetail {
+    pub files: Vec<ModelFileGeometry>,
+    pub base_suggestion: Option<BaseSuggestion>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct TagCount {
     pub tag: String,

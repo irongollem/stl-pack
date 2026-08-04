@@ -3,6 +3,7 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import {
+  type BaseSuggestion,
   type CatalogEntry,
   type CatalogFile,
   type CatalogGroup,
@@ -268,6 +269,9 @@ export const useCatalogStore = defineStore("catalog", () => {
   const selected = ref<CatalogEntry | null>(null);
   const files = ref<CatalogFile[]>([]);
   const modelGeometry = ref<ModelFileGeometry[]>([]);
+  // A base-size suggestion for the selected model, when its mined files
+  // agree — see db::model_base_suggestion. Null hides the drawer's row.
+  const baseSuggestion = ref<BaseSuggestion | null>(null);
   const newTag = ref("");
   const dupGroups = ref<DuplicateGroup[]>([]);
   const showDups = ref(false);
@@ -362,6 +366,20 @@ export const useCatalogStore = defineStore("catalog", () => {
   const geometryTotalTriCount = computed(() =>
     modelGeometry.value.reduce((sum, f) => sum + f.tri_count, 0),
   );
+
+  // Gentle mismatch flag: a curated "NNmm" scale next to a mined height
+  // more than 2.2x the nominal number probably means a mislabeled scale or
+  // a bust, not a full figure. Frontend-only, never auto-corrects anything;
+  // ratio scales ("1:48") don't match the pattern and are skipped.
+  const scaleSanityWarning = computed(() => {
+    const scale = selected.value?.scale;
+    if (!scale || !modelGeometry.value.length) return null;
+    const match = scale.trim().match(/^(\d+)\s*mm$/i);
+    if (!match) return null;
+    const nominal = Number(match[1]);
+    if (!nominal || geometryTallestMm.value <= nominal * 2.2) return null;
+    return `height ${geometryTallestMm.value.toFixed(0)} mm is unusual for ${nominal}mm scale`;
+  });
 
   const wastedBytes = computed(() =>
     dupGroups.value.reduce((sum, g) => sum + reclaimableBytes(g), 0),
@@ -630,6 +648,7 @@ export const useCatalogStore = defineStore("catalog", () => {
     selected.value = entry;
     files.value = [];
     modelGeometry.value = [];
+    baseSuggestion.value = null;
     // A synthesized pose member carries a variant_key; pass it so we list
     // only that pose's files. Whole-folder members send null (all files).
     // Geometry is mined per dir_path (no variant_key split), so it's fetched
@@ -655,8 +674,10 @@ export const useCatalogStore = defineStore("catalog", () => {
       }
       fileVariantMap.value = map;
     }
-    if (geometryResult.status === "ok")
-      modelGeometry.value = geometryResult.data;
+    if (geometryResult.status === "ok") {
+      modelGeometry.value = geometryResult.data.files;
+      baseSuggestion.value = geometryResult.data.base_suggestion;
+    }
   };
 
   /* ---- assign files in a dump folder to variant/pose buckets ---- */
@@ -2255,6 +2276,33 @@ export const useCatalogStore = defineStore("catalog", () => {
     return true;
   };
 
+  /** A confirmed suggestion is ordinary curation: fill the matching base
+   * field in the draft and go through the same save path a manual edit
+   * would. Rounds to the nearest whole mm — the curated fields are
+   * canonical whole-mm strings (see commands::canonical_mm), and real base
+   * sizes are round numbers (25/32/40mm…) anyway. */
+  const applyBaseSuggestion = async () => {
+    const suggestion = baseSuggestion.value;
+    if (!suggestion) return;
+    const mm = String(Math.round(suggestion.mm));
+    if (suggestion.shape === "round") metaDraft.value.base_round_mm = mm;
+    else metaDraft.value.base_square_mm = mm;
+    if (!(await saveMetadata())) return;
+    // the just-saved curation now satisfies the visibility rule on its own
+    baseSuggestion.value = null;
+  };
+
+  const dismissBaseSuggestion = async () => {
+    const entry = selected.value;
+    if (!entry) return;
+    const result = await commands.dismissBaseSuggestion(entry.dir_path);
+    if (result.status === "ok") {
+      baseSuggestion.value = null;
+    } else {
+      toastStore.reportError("Failed to dismiss the suggestion", result.error);
+    }
+  };
+
   /** The drawer's expected workflow: metadata defines the destination.
    * Commit any edits first, then calculate a fresh reviewable move plan from
    * that committed state. A failed/cancelled save never opens a stale plan. */
@@ -2552,10 +2600,14 @@ export const useCatalogStore = defineStore("catalog", () => {
       );
     }
     // The open drawer shows pre-scan (empty) geometry otherwise — refresh it
-    // in place so the section appears without reopening the model.
+    // in place so the section (and any new base suggestion) appears without
+    // reopening the model.
     if (selected.value) {
       const result = await commands.getModelGeometry(selected.value.dir_path);
-      if (result.status === "ok") modelGeometry.value = result.data;
+      if (result.status === "ok") {
+        modelGeometry.value = result.data.files;
+        baseSuggestion.value = result.data.base_suggestion;
+      }
     }
   });
 
@@ -2700,6 +2752,10 @@ export const useCatalogStore = defineStore("catalog", () => {
     geometryTallestMm,
     geometryTotalVolumeMl,
     geometryTotalTriCount,
+    baseSuggestion,
+    applyBaseSuggestion,
+    dismissBaseSuggestion,
+    scaleSanityWarning,
     drawerWidth,
     startDrawerResize,
     // 3D viewer

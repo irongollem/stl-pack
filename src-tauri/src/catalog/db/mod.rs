@@ -14,9 +14,9 @@ mod search;
 mod test_util;
 
 pub use geometry::{
-    duplicate_groups, duplicate_size_candidates, geometry_satisfies, known_hash, model_geometry,
-    store_file_geometry, store_hash, store_identities, store_merge_results,
-    stl_geometry_candidates,
+    duplicate_groups, duplicate_size_candidates, geometry_satisfies, known_hash,
+    model_base_suggestion, model_geometry, store_file_geometry, store_hash, store_identities,
+    store_merge_results, stl_geometry_candidates,
 };
 pub use groups::{
     add_group_tag, add_tag, clear_file_variants, combine_groups, detach_group_source,
@@ -37,8 +37,9 @@ pub use ingest::{
     purge_root, rebuild_search_index, replace_catalog, root_scan_times, root_summary, stats,
 };
 pub use meta::{
-    list_nsfw_designers, rename_designer, rename_release, set_designer_nsfw, set_measured,
-    set_models_nsfw, set_rotation, update_model_facets, update_model_user_meta,
+    dismiss_base_suggestion, list_nsfw_designers, rename_designer, rename_release,
+    set_designer_nsfw, set_measured, set_models_nsfw, set_rotation, update_model_facets,
+    update_model_user_meta,
 };
 // set_model_preview is reached externally only through set_preview's dispatch,
 // not called by its own name — kept public for API parity with pre-split db.rs.

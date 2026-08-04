@@ -466,9 +466,21 @@ async getCatalogModelFiles(dirPath: string, variantKey: string | null) : Promise
     else return { status: "error", error: e  as any };
 }
 },
-async getModelGeometry(dirPath: string) : Promise<Result<ModelFileGeometry[], AppError>> {
+async getModelGeometry(dirPath: string) : Promise<Result<ModelGeometryDetail, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_model_geometry", { dirPath }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Permanently hide a model's base-size suggestion — see
+ * db::model_base_suggestion for when one appears in the first place.
+ */
+async dismissBaseSuggestion(dirPath: string) : Promise<Result<null, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dismiss_base_suggestion", { dirPath }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1329,6 +1341,12 @@ export type BaseCutValidatingStatus = { job_id: string }
  */
 export type BaseCutValidationReport = { non_manifold_edges?: number; dims_mm?: [number, number, number]; verts?: number; warning?: string | null }
 /**
+ * A base-size suggestion derived from mined geometry: every mined file in
+ * the model that detected a base agreed on shape and mm (see
+ * db::model_base_suggestion). "round" | "square"; mm rounded to 1 decimal.
+ */
+export type BaseSuggestion = { shape: string; mm: number }
+/**
  * Outcome of a batch that may partially succeed — the counts and the
  * per-item errors travel together so the UI can report both.
  */
@@ -1939,6 +1957,13 @@ export type MinihoardStatus = { Line: MinihoardLine } | { Finished: MinihoardFin
  * x/y/z are bbox extents; open_edges None means skipped, not clean.
  */
 export type ModelFileGeometry = { file_name: string; tri_count: number; x_mm: number; y_mm: number; z_mm: number; volume_mm3: number; open_edges: number | null }
+/**
+ * What the drawer's geometry section needs in one round trip: the per-file
+ * listing plus any model-level base suggestion (None when files disagree,
+ * nothing detected, the model is already curated, or the suggestion was
+ * dismissed).
+ */
+export type ModelGeometryDetail = { files: ModelFileGeometry[]; base_suggestion: BaseSuggestion | null }
 export type ModelLocation = { Local: string } | { External: string }
 /**
  * The user-editable metadata for one model, saved together from the drawer.

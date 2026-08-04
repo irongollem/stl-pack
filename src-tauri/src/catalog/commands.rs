@@ -21,7 +21,7 @@ use uuid::Uuid;
 use super::{
     db, dups, geometry, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
     CatalogGroupResult, CatalogSearchResult, CatalogStats, DesignerCount, DuplicateGroup,
-    EnsureOutcome, FileVariant, GeometryRange, GroupOrigin, ModelFileGeometry, ModelMetaUpdate,
+    EnsureOutcome, FileVariant, GeometryRange, GroupOrigin, ModelGeometryDetail, ModelMetaUpdate,
     MoveOperation, NormalizeOp, NormalizePlan, ReleaseSummary, TagCount,
 };
 
@@ -1312,13 +1312,31 @@ pub async fn get_catalog_model_files(
 pub async fn get_model_geometry(
     app_handle: AppHandle,
     dir_path: String,
-) -> Result<Vec<ModelFileGeometry>, AppError> {
+) -> Result<ModelGeometryDetail, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app_handle)?;
-        db::model_geometry(&conn, &dir_path)
+        let files = db::model_geometry(&conn, &dir_path)?;
+        let base_suggestion = db::model_base_suggestion(&conn, &dir_path)?;
+        Ok(ModelGeometryDetail { files, base_suggestion })
     })
     .await
     .map_err(|e| AppError::ConfigError(format!("Geometry listing task failed: {}", e)))?
+}
+
+/// Permanently hide a model's base-size suggestion — see
+/// db::model_base_suggestion for when one appears in the first place.
+#[tauri::command]
+#[specta::specta]
+pub async fn dismiss_base_suggestion(
+    app_handle: AppHandle,
+    dir_path: String,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db(&app_handle)?;
+        db::dismiss_base_suggestion(&conn, &dir_path)
+    })
+    .await
+    .map_err(|e| AppError::ConfigError(format!("Dismiss task failed: {}", e)))?
 }
 
 #[tauri::command]

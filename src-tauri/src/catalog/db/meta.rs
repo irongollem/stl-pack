@@ -167,6 +167,21 @@ pub fn update_model_user_meta(
     Ok(())
 }
 
+/// Permanently suppress a model's base-size suggestion (see
+/// db::model_base_suggestion) — set-once, like the nsfw flag; there's no
+/// "undismiss" since a fresh suggestion only reappears once curation or the
+/// mined facts actually change.
+pub fn dismiss_base_suggestion(conn: &Connection, dir_path: &str) -> Result<(), AppError> {
+    require_model(conn, dir_path)?;
+    conn.execute(
+        "INSERT INTO model_user_meta (dir_path, base_suggestion_dismissed) VALUES (?1, 1)
+         ON CONFLICT(dir_path) DO UPDATE SET base_suggestion_dismissed = 1",
+        params![dir_path],
+    )
+    .map_err(|e| AppError::ConfigError(format!("Failed to dismiss base suggestion: {}", e)))?;
+    Ok(())
+}
+
 /// Point a model at a user-chosen or rendered preview image. Stored in
 /// model_user_meta so it survives rescans and beats the scanner's pick.
 pub fn set_model_preview(
