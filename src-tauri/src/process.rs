@@ -1,8 +1,5 @@
-//! Shared process-spawn helper. Plinth is a GUI app whose primary audience
-//! runs Windows, and on Windows every subprocess a GUI app spawns flashes
-//! a console window unless CREATE_NO_WINDOW is set — so ALL spawns
-//! (Blender, minihoard, the OS `start` shim, …) must go through here.
-//! macOS/Linux have no such concept and pass through untouched.
+//! On Windows, every subprocess a GUI app spawns flashes a console window
+//! unless CREATE_NO_WINDOW is set, so all spawns go through here.
 
 use std::ffi::OsStr;
 #[cfg(target_os = "windows")]
@@ -23,7 +20,7 @@ pub fn new_command(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
-/// Same guarantee for tokio-managed children (the render engine's flavor).
+/// Same guarantee as `new_command`, for tokio-managed children.
 pub fn new_async_command(program: impl AsRef<OsStr>) -> tokio::process::Command {
     let cmd = tokio::process::Command::new(program);
     #[cfg(target_os = "windows")]

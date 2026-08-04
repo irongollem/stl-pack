@@ -244,8 +244,6 @@ pub async fn configure_nsfw_pin(
         RECOVERY_KEY,
         serde_json::to_value(make_record(&normalize_recovery_code(&recovery_code)))?,
     );
-    // Remove the abandoned client-side prototype if a development build
-    // wrote it. Neither value should be authoritative or exposed again.
     store.delete("nsfw_pin_hash");
     store.delete("show_nsfw");
     store
