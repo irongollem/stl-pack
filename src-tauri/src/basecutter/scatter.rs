@@ -1,24 +1,11 @@
 //! Scatter job pipeline: embed scatter_landscape.py, build the job JSON,
 //! spawn headless Blender, parse its stdout token protocol into
-//! `ScatterStatus` events. See docs/SCATTER.md "Pinned interfaces" and
-//! scatter_landscape.py's own docstring for the exact job JSON shape and
-//! stdout protocol this file is the Rust side of.
+//! `ScatterStatus` events. See docs/SCATTER.md "Pinned interfaces" for
+//! the job JSON shape and stdout protocol this file implements.
 //!
-//! Mirrors the established pattern (this is the THIRD instance —
-//! basecutter::job/commands for the cut pipeline, basecutter::generator for
-//! the landscape bake, this for scatter): embedded script via
-//! `include_str!` + `materialize_embedded_script`'s always-overwrite
-//! materialization, `render::engine::run_blender_lines` as the process
-//! harness, `--python-exit-code 1` so an uncaught script exception exits
-//! Blender non-zero, a pure/process-free token parser, a check-and-claim
-//! single-job guard under ONE lock, and `Notify::notify_one` for cancel
-//! (permit semantics — see `cancel_scatter`'s doc comment).
-//!
-//! Shaped closer to `generator.rs` than to `job.rs`/`commands.rs`'s split:
-//! scatter is "one script invocation, one job" (docs/SCATTER.md "The
-//! architectural call: scatter is a LANDSCAPE TRANSFORMER"), not an N-item
-//! batch with a mid-run validation-abort gate, so there's no reason to carry
-//! two files' worth of indirection for it.
+//! One script invocation, one job — not an N-item batch with a mid-run
+//! validation-abort gate, so this stays a single file rather than
+//! job.rs/commands.rs's split.
 
 use crate::error::AppError;
 use crate::models::BlenderInfo;
@@ -37,31 +24,20 @@ use tauri_specta::Event;
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-/// The Blender script ships INSIDE the binary — same always-overwrite
-/// materialization as base_cut.py/gen_landscape.py (see
-/// engine::materialize_embedded_script for the stale-copy trap this avoids).
+/// The Blender script ships INSIDE the binary (see
+/// engine::materialize_embedded_script for the always-overwrite rationale).
 const SCATTER_SCRIPT: &str = include_str!("../../resources/scatter_landscape.py");
 
-/// Write the embedded scatter script where Blender can read it. Always
-/// overwrites, so the file on disk can never drift from the built app.
 pub fn materialize_scatter_script(app_handle: &AppHandle) -> Result<PathBuf, AppError> {
     crate::render::engine::materialize_embedded_script(app_handle, "scatter_landscape.py", SCATTER_SCRIPT)
 }
 
-// ------------------------------------------------------------- piece types
-
 /// A generated piece kind — the only source scatter can actually place
-/// today (docs/SCATTER.md "Execution phases": bundled/user assets are S4).
-/// Serializes lowercase ("pebble"/"rock"/"twig"/"grass"/"mushroom")
-/// to match scatter_landscape.py's generated-kind set exactly. `Pebble`/
-/// `Rock` are built as noise-displaced icospheres and still live in that
-/// script's `CANONICAL_MM` table; `Twig`/`Grass`/`Mushroom` are
-/// swept/extruded solids (see `build_twig_piece`/
-/// `build_grass_piece`/`build_mushroom_piece` there) — same dispatch shape,
-/// different geometry recipe per kind. `Mushroom` is the one kind that
-/// deliberately stands upright (stem down) rather than lying flat — see
-/// scatter_landscape.py's "lies_flat" comment block for why every other
-/// non-round generated kind lies flat and this one doesn't.
+/// today (bundled/user assets are a later phase). Serializes lowercase
+/// ("pebble"/"rock"/"twig"/"grass"/"mushroom") to match
+/// scatter_landscape.py's generated-kind set exactly. `Mushroom` is the
+/// one kind that deliberately stands upright (stem down) rather than
+/// lying flat like every other non-round generated kind.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum GeneratedPieceKind {
@@ -73,14 +49,10 @@ pub enum GeneratedPieceKind {
 }
 
 /// One piece's source — externally tagged with NO `#[serde(tag = ...)]`
-/// (Rust's default enum-with-struct-variants shape), matching
-/// docs/SCATTER.md's pinned `PieceChoice.piece` shape verbatim:
-/// `{"Generated": {"kind": "pebble"|"rock"}}` or `{"Asset": {"id": "..."}}`.
-/// scatter_landscape.py's `validate_pieces` docstring calls this out by
-/// name: "matches Rust's default serde derive (no #[serde(tag=...)])".
-/// `Asset` is a recognized, well-formed part of the shape today even though
-/// the script fails it gracefully (S4 not implemented yet) — see
-/// `validate_pieces` in scatter_landscape.py.
+/// (Rust's default enum-with-struct-variants shape): `{"Generated":
+/// {"kind": "pebble"|"rock"}}` or `{"Asset": {"id": "..."}}`. `Asset` is
+/// a recognized, well-formed part of the shape today even though the
+/// script fails it gracefully (not implemented yet).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub enum ScatterPieceSource {
     Generated { kind: GeneratedPieceKind },
@@ -120,42 +92,27 @@ pub struct ScatterAsset {
     pub path: String,
     pub footprint_mm: f64,
     pub height_mm: f64,
-    /// The sRGB hex a placed instance of this asset paints its "Col" corner
-    /// attribute with (VTT GLB export design doc "Scatter") — a curated,
-    /// muted tabletop tone per bundled id (see `scatter_assets::BUNDLED_ASSETS`),
-    /// or `"#9a9a9a"` for every user-library asset (no curation pass has
-    /// looked at it, so a neutral grey is the honest default rather than a
-    /// guess). Threaded into a scatter job's `asset_colors` map the same
-    /// way `path` is threaded into `asset_paths` — see
-    /// `scatter_assets::resolve_asset_color`.
+    /// The sRGB hex a placed instance of this asset paints its "Col"
+    /// corner attribute with — a curated, muted tabletop tone per bundled
+    /// id, or `"#9a9a9a"` for every user-library asset (no curation pass
+    /// has looked at it, so neutral grey is the honest default).
     pub color: String,
-    /// Additive to the pinned shape (docs/SCATTER.md "Scale anchor": "the
-    /// user-library scan applies the same lens: it warns (not blocks) when
-    /// a piece's footprint suggests it's a mini, not debris"). `None` for
-    /// every bundled asset (curated and normalized, never warns) and for a
-    /// user-library piece under the heuristic; `Some(message)` is advisory
-    /// only — the piece is still usable, never dropped from the returned
-    /// list on this account alone. See
-    /// `scatter_assets::MINI_FOOTPRINT_WARNING_MM` for the exact threshold
-    /// and reasoning, and `scatter_assets::unparseable_stl_warning` for the
-    /// other case this field carries (a file that failed to parse at all).
+    /// `None` for every bundled asset (curated and normalized, never
+    /// warns) and for a user-library piece under the heuristic;
+    /// `Some(message)` is advisory only — the piece is still usable,
+    /// never dropped from the returned list on this account alone. See
+    /// `scatter_assets::MINI_FOOTPRINT_WARNING_MM` for the exact threshold.
     pub warning: Option<String>,
 }
 
-/// Bundled scatter asset set (docs/SCATTER.md "Bundled assets"): S4a
-/// curation output — see `scatter_assets::BUNDLED_ASSETS` for the pinned
-/// id/label/footprint/height/license table this reads, and its own doc
-/// comment for how that table is kept from drifting off the curated
-/// manifest.json shipped alongside the STLs. Each asset is materialized
-/// lazily (same as the embedded scripts) on every call, so a stale
-/// materialized copy can never survive a rebuild.
+/// Bundled scatter asset set — see `scatter_assets::BUNDLED_ASSETS` for
+/// the pinned id/label/footprint/height/license table this reads. Each
+/// asset is materialized lazily on every call.
 #[tauri::command]
 #[specta::specta]
 pub fn get_scatter_assets(app_handle: AppHandle) -> Result<Vec<ScatterAsset>, AppError> {
     crate::basecutter::scatter_assets::get_bundled_assets(&app_handle)
 }
-
-// ----------------------------------------------------------------- params
 
 fn default_scale() -> (f64, f64) {
     (0.85, 1.15)
@@ -179,14 +136,13 @@ fn default_clump() -> f64 {
     0.0
 }
 
-/// Scatter placement parameters — see docs/SCATTER.md "Pinned interfaces"
-/// and "Scale anchor: 28-32mm heroic". Defaults mirror
-/// scatter_landscape.py's `scatter()`'s own `params.get(key, default)`
-/// fallbacks exactly, so a partial JSON (from a preset or an older UI build)
-/// behaves identically whether the default is applied here or in the
-/// script. `seed`, `density_per_dm2`, and `pieces` have no script-side
-/// default (missing keys raise `KeyError`/`ValueError` there), so they stay
-/// required here too.
+/// Scatter placement parameters. Defaults mirror scatter_landscape.py's
+/// `scatter()`'s own `params.get(key, default)` fallbacks exactly, so a
+/// partial JSON (from a preset or an older UI build) behaves identically
+/// whether the default is applied here or in the script. `seed`,
+/// `density_per_dm2`, and `pieces` have no script-side default (missing
+/// keys raise `KeyError`/`ValueError` there), so they stay required here
+/// too.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub struct ScatterParams {
     pub seed: u32,
@@ -203,34 +159,29 @@ pub struct ScatterParams {
     pub max_slope_deg: f64,
     #[serde(default = "default_edge_margin_mm")]
     pub edge_margin_mm: f64,
-    /// Clustering bias for candidate placement, `0.0..=1.0` (see
-    /// scatter_landscape.py's `build_candidates`/`_clump_cluster_centers`
-    /// for the algorithm this drives). `0.0` (the default) is the original
-    /// even jittered-grid behavior EXACTLY — no warp step runs at all, so a
-    /// job that omits this key places identically to before it existed.
-    /// Toward `1.0`, candidates are pulled toward a handful of seeded
-    /// cluster centers instead of staying evenly spread, so pieces read as
-    /// tufts/patches (grass clumps, forest-floor drifts) rather than a
-    /// uniform scatter. Deterministic and per-layer, same as every other
-    /// knob here — see `validate_layer` for the range check.
+    /// Clustering bias for candidate placement, `0.0..=1.0`. `0.0` (the
+    /// default) is the original even jittered-grid behavior EXACTLY — no
+    /// warp step runs at all, so a job that omits this key places
+    /// identically to before it existed. Toward `1.0`, candidates are
+    /// pulled toward a handful of seeded cluster centers instead of
+    /// staying evenly spread, so pieces read as tufts/patches rather than
+    /// a uniform scatter.
     #[serde(default = "default_clump")]
     pub clump: f64,
     pub pieces: Vec<PieceChoice>,
 }
 
 /// A scatter job, as sent from the frontend and forwarded to
-/// scatter_landscape.py verbatim — unlike `BaseCutJob`, no field is renamed:
-/// the script reads `job["landscape_path"]`, `job["out_path"]`,
-/// `job["layers"]` directly (see its module docstring's job JSON example).
+/// scatter_landscape.py verbatim — unlike `BaseCutJob`, no field is
+/// renamed: the script reads `job["landscape_path"]`, `job["out_path"]`,
+/// `job["layers"]` directly.
 ///
-/// `layers` is a STACK, not a single pass (docs/SCATTER.md "Layers — build
-/// the debris up, peel it back"): each entry is a full `ScatterParams`, and
-/// each places independently onto the TERRAIN from its own seed — adding or
-/// removing a layer never moves another layer's pieces. Must be non-empty;
-/// `start_scatter`/`validate_scatter_job` reject an empty stack before any
-/// Blender work, same as an empty `pieces` list within one layer. One layer
-/// is the common case. This replaces the old `params: ScatterParams` shape
-/// outright — no compat branch, per house rule (old === redundant).
+/// `layers` is a STACK, not a single pass: each entry is a full
+/// `ScatterParams`, and each places independently onto the TERRAIN from
+/// its own seed — adding or removing a layer never moves another layer's
+/// pieces. Must be non-empty; `start_scatter`/`validate_scatter_job`
+/// reject an empty stack before any Blender work. One layer is the
+/// common case.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Type)]
 pub struct ScatterJob {
     pub landscape_path: String,
@@ -238,14 +189,11 @@ pub struct ScatterJob {
     pub layers: Vec<ScatterParams>,
 }
 
-// ------------------------------------------------------------ token parsing
-
 /// One parsed line of scatter_landscape.py's stdout protocol (see its
-/// docstring). Pure/process-free, same as `basecutter::job::parse_token` and
-/// `generator::parse_landscape_token`, so the grammar is unit-testable
-/// without spawning Blender. `SCATTER_PIECE` (the `--debug`-only per-piece
-/// line) is deliberately not modeled here — S2 never passes `--debug`, so
-/// the line never appears on this path.
+/// docstring). Pure/process-free, so the grammar is unit-testable without
+/// spawning Blender. `SCATTER_PIECE` (the `--debug`-only per-piece line)
+/// is deliberately not modeled here — normal runs never pass `--debug`,
+/// so the line never appears on this path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScatterToken {
     Started,
@@ -254,24 +202,18 @@ pub enum ScatterToken {
         out: String,
         placed: u32,
         manifold: bool,
-        /// Additive (docs/SCATTER.md "events"): re-measured loose-shell
-        /// count on the round-tripped export (terrain + one per placed
-        /// piece, by construction — see scatter_landscape.py's
-        /// `roundtrip_check`). `#[serde(default)]`-equivalent here via
-        /// `Option`: a payload that omits the field (an older script
-        /// build) still parses, it just carries no shell count.
+        /// Re-measured loose-shell count on the round-tripped export
+        /// (terrain + one per placed piece, by construction).
+        /// `#[serde(default)]`-equivalent here via `Option`: a payload
+        /// that omits the field (an older script build) still parses, it
+        /// just carries no shell count.
         shells: Option<u32>,
-        /// Additive (docs/SCATTER.md "Layers"): the number of layers in the
-        /// stack that just ran (`job["layers"]`'s length, as scatter_landscape.py
-        /// itself counted it). Same `Option`-for-forward-compat treatment as
-        /// `shells`.
+        /// The number of layers in the stack that just ran. Same
+        /// `Option`-for-forward-compat treatment as `shells`.
         layers: Option<u32>,
-        /// The scattered output's GLB twin path (VTT GLB export design doc
-        /// "Scatter" / "Global conventions" #4) — `Option` for the same
-        /// forward/backward-compat reason `generator::LandscapeToken::Generated`'s
-        /// own `glb` field already documents: the current script always
-        /// sends it (scatter_landscape.py's module docstring: "always a real
-        /// path from this script version"), but the parser shouldn't
+        /// The scattered output's GLB twin path — `Option` for the same
+        /// forward/backward-compat reason as `shells`/`layers`: the
+        /// current script always sends it, but the parser shouldn't
         /// hard-fail on a stale/hand-edited payload that omits it.
         glb: Option<String>,
     },
@@ -330,8 +272,6 @@ pub fn parse_scatter_token(line: &str) -> Option<ScatterToken> {
     None
 }
 
-// ---------------------------------------------------------------- job file
-
 /// Every unique asset id referenced by `pieces`' `Asset { id }` entries, in
 /// first-seen order (a `HashSet` would work too, but a stable order keeps
 /// the injected `asset_paths` JSON and any log output deterministic).
@@ -349,12 +289,9 @@ fn asset_ids(pieces: &[PieceChoice]) -> Vec<String> {
 }
 
 /// Every unique asset id referenced across ALL layers' `pieces`, in
-/// first-seen order (layer order, then per-layer piece order) — the
-/// asset_paths union docs/SCATTER.md's `ScatterJob` pin calls for: "unions
-/// every layer's ids". Reuses `asset_ids`' own within-layer dedup, then
-/// dedups again across layers so an id shared by two layers (e.g. both a
-/// Boneyard and an Overgrown layer pulling the same skull) is only resolved
-/// once.
+/// first-seen order (layer order, then per-layer piece order). Reuses
+/// `asset_ids`' own within-layer dedup, then dedups again across layers
+/// so an id shared by two layers is only resolved once.
 fn layer_asset_ids(layers: &[ScatterParams]) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     let mut ids = Vec::new();
@@ -372,11 +309,9 @@ fn layer_asset_ids(layers: &[ScatterParams]) -> Vec<String> {
 /// to an absolute path (bundled set first, then the user library — see
 /// `scatter_assets::resolve_asset_path`), returning the `id -> path` map
 /// `write_job_file` injects into the wire JSON. Fails BEFORE any Blender
-/// work if an id can't be resolved (docs/SCATTER.md's Asset-source
-/// validation pin: "unknown id or missing file -> clear SCATTER_FAILED
-/// before any Blender work" — this is the Rust-side half of that guard;
-/// scatter_landscape.py re-checks `asset_paths` itself as defense in depth
-/// against a hand-edited or stale job file).
+/// work if an id can't be resolved — scatter_landscape.py re-checks
+/// `asset_paths` itself as defense in depth against a hand-edited or
+/// stale job file.
 pub fn resolve_asset_paths(
     app_handle: &AppHandle,
     layers: &[ScatterParams],
@@ -391,13 +326,9 @@ pub fn resolve_asset_paths(
 }
 
 /// The `asset_colors` counterpart to `resolve_asset_paths` — same id set
-/// (every `Asset` piece referenced by ANY layer), but pure: unlike a path,
-/// a color never needs an `AppHandle` or touches disk
-/// (`scatter_assets::resolve_asset_color` is a compile-time lookup with a
-/// neutral-grey fallback, never a failure — see its own doc comment), so
-/// this can't fail the way `resolve_asset_paths` can on an unresolvable
-/// id. VTT GLB export design doc "Scatter": "pass an asset_colors: {id:
-/// hex} map into the scatter job JSON".
+/// (every `Asset` piece referenced by ANY layer), but pure: unlike a
+/// path, a color never needs an `AppHandle` or touches disk, so this
+/// can't fail the way `resolve_asset_paths` can on an unresolvable id.
 pub fn resolve_asset_colors(layers: &[ScatterParams]) -> std::collections::HashMap<String, String> {
     layer_asset_ids(layers)
         .into_iter()
@@ -409,13 +340,12 @@ pub fn resolve_asset_colors(layers: &[ScatterParams]) -> std::collections::HashM
 }
 
 /// Serialize `job` and inject the resolved `asset_paths`/`asset_colors`
-/// maps under their own top-level keys — same "Rust stays the single owner
-/// of derived data, the script never guesses" shape as
-/// `job::write_job_file`'s "cut" footprint injection, but at the top level
-/// (one map for the whole job) rather than per-placement, since asset
-/// identity — unlike a cut footprint — isn't a per-placement-derived value,
-/// just a lookup shared across every placement that references the same
-/// id.
+/// maps under their own top-level keys — same "Rust stays the single
+/// owner of derived data" shape as `job::write_job_file`'s "cut"
+/// footprint injection, but at the top level (one map for the whole job)
+/// rather than per-placement, since asset identity isn't a
+/// per-placement-derived value, just a lookup shared across every
+/// placement that references the same id.
 fn job_json_with_asset_extras(
     job: &ScatterJob,
     asset_paths: &std::collections::HashMap<String, String>,
@@ -440,13 +370,11 @@ fn job_json_with_asset_extras(
 
 /// Write the job JSON into `dir` (the materialized script's directory in
 /// production; a scratch dir in tests) so Blender can read it via `--job`.
-/// `asset_paths` is the already-resolved `id -> path` map (see
-/// `resolve_asset_paths`) — pass an empty map for a job with no `Asset`
-/// pieces, exactly what every Generated-only test below does. `asset_colors`
-/// is `resolve_asset_colors`' equally-derived `id -> hex` map — pass an
-/// empty map the same way; scatter_landscape.py's own `asset_colors.get(id,
-/// DEFAULT_ASSET_COLOR)` fallback makes an empty/missing map behave
-/// identically to every piece using the neutral default.
+/// `asset_paths` is the already-resolved `id -> path` map — pass an empty
+/// map for a job with no `Asset` pieces. `asset_colors` is
+/// `resolve_asset_colors`' equally-derived `id -> hex` map; an
+/// empty/missing map behaves identically to every piece using the
+/// neutral default.
 pub fn write_job_file(
     dir: &Path,
     job: &ScatterJob,
@@ -489,14 +417,13 @@ pub fn build_scatter_command(
 /// `ScatterToken`s, invoking `on_token` for each as it arrives. Returns the
 /// `SCATTER_DONE` payload's fields on success, or `(error, stdout_tail)`.
 ///
-/// Like `generator::spawn_and_parse` (and unlike `job::spawn_and_parse`'s
-/// validation-abort gate), there is nothing to abort mid-run: one script
-/// invocation makes exactly one decorated STL, so every token is handled the
-/// same way regardless of content, and failure is entirely a non-zero exit
-/// (the script's own `sys.exit(1)` after `SCATTER_FAILED`, or an uncaught
-/// exception via `--python-exit-code 1`). The `Failed` token's `reason` is
-/// captured so the error message can quote it instead of just "Blender
-/// exited with exit status 1".
+/// One script invocation makes exactly one decorated STL, so every token
+/// is handled the same way regardless of content — there's nothing to
+/// abort mid-run. Failure is entirely a non-zero exit (the script's own
+/// `sys.exit(1)` after `SCATTER_FAILED`, or an uncaught exception via
+/// `--python-exit-code 1`). The `Failed` token's `reason` is captured so
+/// the error message can quote it instead of just "Blender exited with
+/// exit status 1".
 pub async fn spawn_and_parse<F>(
     blender: &BlenderInfo,
     script: &Path,
@@ -595,8 +522,6 @@ where
     })
 }
 
-// -------------------------------------------------------------- validation
-
 /// Input guards for `start_scatter`, split out as a plain function (no
 /// `AppHandle`/Blender detection) so it's unit-testable without spawning a
 /// job. Deliberately checks the same conditions scatter_landscape.py itself
@@ -604,8 +529,7 @@ where
 /// error surfaces before a Blender launch instead of as an opaque
 /// `SCATTER_FAILED`/non-zero-exit round trip. Runs the same per-layer sanity
 /// check (`validate_layer`) against EVERY entry in `job.layers` — one bad
-/// layer anywhere in the stack fails the whole job before Blender launches,
-/// same as one bad piece used to fail the single `params` shape.
+/// layer anywhere in the stack fails the whole job before Blender launches.
 pub fn validate_scatter_job(job: &ScatterJob) -> Result<(), AppError> {
     if !Path::new(&job.landscape_path).is_file() {
         return Err(AppError::NotFoundError(format!(
@@ -673,25 +597,21 @@ fn validate_layer(index: usize, params: &ScatterParams) -> Result<(), AppError> 
     Ok(())
 }
 
-// ------------------------------------------------------------------ guard
-
 /// (job id, its cancel token) — the shape held by the active-job registry,
 /// named so clippy's complex-type lint doesn't fire on the static below.
 type ActiveJob = (String, Arc<Notify>);
 
-/// The single running scatter job, if any — mirrors
-/// `basecutter::commands::ACTIVE_BASE_CUT` /
-/// `generator::ACTIVE_LANDSCAPE_GEN`: only one at a time, its own guard
-/// (scatter is a distinct activity that merely shares the one Blender
-/// process slot).
+/// The single running scatter job, if any — only one at a time, its own
+/// guard (scatter is a distinct activity that merely shares the one
+/// Blender process slot).
 static ACTIVE_SCATTER: Lazy<Mutex<Option<ActiveJob>>> = Lazy::new(|| Mutex::new(None));
 
-/// Atomically claim the single scatter slot under ONE lock — the fixed
-/// pattern from the base-cut review: a separate is-active check before
-/// claiming would let two concurrent calls both pass it and spawn two
-/// Blender jobs. Extracted as its own function (taking the registry rather
-/// than reaching for the static directly) so the race-free claim/release
-/// behavior is unit-testable without a Tauri `AppHandle`.
+/// Atomically claim the single scatter slot under ONE lock — a separate
+/// is-active check before claiming would let two concurrent calls both
+/// pass it and spawn two Blender jobs. Extracted as its own function
+/// (taking the registry rather than reaching for the static directly) so
+/// the race-free claim/release behavior is unit-testable without a Tauri
+/// `AppHandle`.
 fn claim_active_job(
     registry: &Mutex<Option<ActiveJob>>,
     job_id: &str,
@@ -719,8 +639,6 @@ fn release_active_job(registry: &Mutex<Option<ActiveJob>>, job_id: &str) {
         }
     }
 }
-
-// ---------------------------------------------------------------- commands
 
 #[tauri::command]
 #[specta::specta]
@@ -914,8 +832,6 @@ mod tests {
         }
     }
 
-    // ------------------------------------------------------ JSON shape --
-
     /// Pins the full job JSON against every key scatter_landscape.py's
     /// module docstring documents — the ground-truth shape check the task
     /// calls for.
@@ -1063,8 +979,6 @@ mod tests {
         assert_eq!(params.pieces[0].weight, 1.0);
     }
 
-    // ----------------------------------------------------- token parsing --
-
     #[test]
     fn parse_scatter_token_handles_every_token_type() {
         assert_eq!(parse_scatter_token("SCATTER_START"), Some(ScatterToken::Started));
@@ -1129,8 +1043,6 @@ mod tests {
             None
         );
     }
-
-    // ------------------------------------------------------- command shape --
 
     #[test]
     fn scatter_command_has_expected_shape() {
@@ -1336,8 +1248,6 @@ mod tests {
         );
     }
 
-    // --------------------------------------------------------- validation --
-
     #[test]
     fn validate_scatter_job_rejects_a_missing_landscape() {
         let job = ScatterJob {
@@ -1541,8 +1451,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // -------------------------------------------------------------- guard --
-
     /// The check-and-claim race the base-cut review flagged: a claim must
     /// happen under the SAME lock acquisition as the is-active check, or two
     /// concurrent callers could both observe "empty" and both claim.
@@ -1577,18 +1485,10 @@ mod tests {
         assert!(registry.lock().unwrap().is_none());
     }
 
-    // --------------------------------------------------------------- misc --
-
-    // get_scatter_assets (and get_bundled_assets/resolve_asset_path's
-    // bundled branch) all need a real `AppHandle` to materialize bytes —
-    // same "AppHandle-dependent wrapper stays untested at the unit level"
-    // split as materialize_render_script/materialize_scatter_script (see
-    // this file's and engine.rs's doc comments). The BUNDLED_ASSETS table
-    // it serves IS unit-tested directly, exhaustively, in
-    // scatter_assets.rs's manifest-drift tests; the materialization itself
-    // is exercised for real by the ignored end-to-end test below.
-
-    // ------------------------------------------------------- integration --
+    // get_scatter_assets needs a real `AppHandle` to materialize bytes, so
+    // it isn't unit-tested directly; BUNDLED_ASSETS itself is covered by
+    // scatter_assets.rs's manifest-drift tests, and materialization is
+    // exercised by the ignored end-to-end test below.
 
     /// Run scatter_landscape.py directly (bypassing spawn_and_parse, which
     /// deliberately never models `--debug`'s SCATTER_PIECE line — see
@@ -1618,10 +1518,8 @@ mod tests {
             .collect()
     }
 
-    /// End-to-end: generate a small watertight landscape with Blender itself
-    /// (see basecutter::job's identical helper for why an imported/hand-
-    /// authored mesh is avoided — junk meshes fake unrelated symptoms), then
-    /// exercise the LAYER STACK docs/SCATTER.md pins:
+    /// End-to-end: generate a small watertight landscape with Blender
+    /// itself, then exercise the LAYER STACK contract:
     ///
     ///   1. a 2-layer job (layer 0: generated pebbles+rocks; layer 1: a
     ///      bundled skull Asset + generated rocks) through spawn_and_parse
@@ -1632,8 +1530,7 @@ mod tests {
     ///   3. independence — layer 0's own SCATTER_PIECE positions (x/y/z/yaw/
     ///      size/kind) are IDENTICAL whether it runs alone or as the first
     ///      layer of the 2-layer stack, proving a later layer never perturbs
-    ///      an earlier one's placement (docs/SCATTER.md "Layers": "adding a
-    ///      rocks layer must not move where the Boneyard skulls fell").
+    ///      an earlier one's placement.
     ///
     /// Run with: cargo test -- --ignored scatters_layers_independently_and_deterministically
     #[tokio::test]
