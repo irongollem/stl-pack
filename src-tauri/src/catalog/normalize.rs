@@ -1789,7 +1789,7 @@ mod tests {
         db::replace_catalog(&mut conn, &raw_a.to_string_lossy(), &[], &[], &[], &[], &[]).unwrap();
         db::replace_catalog(&mut conn, &raw_b.to_string_lossy(), &[], &[], &[], &[], &[]).unwrap();
         assert_eq!(
-            db::search(&conn, "bog hag", &[], 10, 0, true).unwrap().total,
+            db::search(&conn, "bog hag", &[], None, None, None, None, 10, 0, true).unwrap().total,
             1,
             "staged model must survive rescans of the raw folders it left"
         );
@@ -1797,7 +1797,7 @@ mod tests {
         // sharing group_name) — search_groups collapses them the way the
         // catalog cards do, confirming the merged model survived intact
         assert_eq!(
-            db::search_groups(&conn, "wisp", &[], None, "name", 10, 0, true)
+            db::search_groups(&conn, "wisp", &[], None, None, None, None, None, "name", 10, 0, true)
                 .unwrap()
                 .total,
             1,

@@ -18,6 +18,14 @@ defineEmits<{
 const previewUrl = computed(() =>
   props.group.preview_path ? convertFileSrc(props.group.preview_path) : null,
 );
+
+const measuredSize = computed(() => {
+  const { height_mm, volume_mm3 } = props.group;
+  const parts: string[] = [];
+  if (height_mm != null) parts.push(`${height_mm.toFixed(1)} mm`);
+  if (volume_mm3 != null) parts.push(`${(volume_mm3 / 1000).toFixed(1)} ml`);
+  return parts.join(" · ");
+});
 </script>
 
 <template>
@@ -96,6 +104,12 @@ const previewUrl = computed(() =>
         </template>
         {{ group.file_count }} file{{ group.file_count === 1 ? "" : "s" }} ·
         {{ formatFileSize(group.total_size_bytes) }}
+      </p>
+      <!-- Mined physical size — only known once the geometry scan has run;
+           silently omitted rather than shown as 0, matching the drawer's
+           un-mined marker. -->
+      <p v-if="measuredSize" class="text-xs opacity-40 font-mono">
+        {{ measuredSize }}
       </p>
     </div>
   </div>

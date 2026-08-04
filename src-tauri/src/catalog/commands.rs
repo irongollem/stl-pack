@@ -21,8 +21,8 @@ use uuid::Uuid;
 use super::{
     db, dups, geometry, normalize, pack, scanner, BatchOutcome, CatalogEntry, CatalogFile,
     CatalogGroupResult, CatalogSearchResult, CatalogStats, DesignerCount, DuplicateGroup,
-    EnsureOutcome, FileVariant, GroupOrigin, ModelFileGeometry, ModelMetaUpdate, MoveOperation,
-    NormalizeOp, NormalizePlan, ReleaseSummary, TagCount,
+    EnsureOutcome, FileVariant, GeometryRange, GroupOrigin, ModelFileGeometry, ModelMetaUpdate,
+    MoveOperation, NormalizeOp, NormalizePlan, ReleaseSummary, TagCount,
 };
 
 /// Scan and duplicate jobs share one registry; both cancel through
@@ -1045,13 +1045,25 @@ pub async fn search_catalog(
     app_handle: AppHandle,
     query: String,
     tags: Vec<String>,
+    geometry: GeometryRange,
     limit: u32,
     offset: u32,
 ) -> Result<CatalogSearchResult, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let conn = open_db(&app_handle)?;
         let include_nsfw = crate::content_filter::is_unlocked();
-        let page = db::search(&conn, &query, &tags, limit.min(200), offset, include_nsfw)?;
+        let page = db::search(
+            &conn,
+            &query,
+            &tags,
+            geometry.height_min_mm,
+            geometry.height_max_mm,
+            geometry.volume_min_mm3,
+            geometry.volume_max_mm3,
+            limit.min(200),
+            offset,
+            include_nsfw,
+        )?;
         Ok(CatalogSearchResult {
             entries: page.entries,
             total: page.total,
@@ -1069,6 +1081,7 @@ pub async fn search_catalog_groups(
     query: String,
     tags: Vec<String>,
     designer: Option<String>,
+    geometry: GeometryRange,
     sort: Option<String>,
     limit: u32,
     offset: u32,
@@ -1081,6 +1094,10 @@ pub async fn search_catalog_groups(
             &query,
             &tags,
             designer.as_deref(),
+            geometry.height_min_mm,
+            geometry.height_max_mm,
+            geometry.volume_min_mm3,
+            geometry.volume_max_mm3,
             sort.as_deref().unwrap_or("name"),
             limit.min(200),
             offset,
@@ -1089,6 +1106,7 @@ pub async fn search_catalog_groups(
         Ok(CatalogGroupResult {
             groups: page.groups,
             total: page.total,
+            not_mined_count: page.not_mined_count,
         })
     })
     .await
