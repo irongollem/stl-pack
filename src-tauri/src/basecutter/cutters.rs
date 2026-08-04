@@ -1,7 +1,7 @@
 //! Cutter data model — see docs/BASECUTTER.md "Cutters are data, not code"
 //! and "The plinth". This module owns the shapes, the seed library, and the
-//! nominal->cut derivation; `base_cut.py` and the viewport overlay both
-//! consume it, so nothing here may assume the `CutterKind` list stays closed.
+//! nominal->cut derivation. Nothing here may assume the `CutterKind` list
+//! stays closed — it's meant to grow.
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -22,8 +22,6 @@ pub enum CutterKind {
 /// A magnet as it will be pocketed into a plinth's boss. Drawn from the
 /// user's magnet inventory (app settings), never from a hardcoded
 /// base-size->magnet table — pairing is a suggestion rule over inventory.
-/// Consumed by `basecutter::job::BaseCutJob` (phase 3), which serializes it
-/// straight into a placement's `magnet` field for base_cut.py.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct MagnetSpec {
     pub diameter_mm: f64,
@@ -34,7 +32,6 @@ pub struct MagnetSpec {
 /// Tapered plinth profile. Defaults are caliper-measured off a real 32 mm
 /// round base (32 -> 30 mm over 3.7 mm tall, 1.2 mm wall — see
 /// docs/BASECUTTER.md "The plinth"), not arbitrary round numbers.
-/// Carried one-per-job by `basecutter::job::BaseCutJob` (phase 3).
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct PlinthParams {
     pub height_mm: f64,
@@ -62,11 +59,9 @@ impl Default for PlinthParams {
     }
 }
 
-/// One cut instance: a cutter positioned on the landscape. Mirrors a job's
-/// `placements[]` entry (see base_cut.py's docstring) — `name` is a
-/// user-facing label echoed back in the script's `CUT_*` tokens so progress
-/// events can name the base, not just its index.
-/// Carried as a `Vec<Placement>` by `basecutter::job::BaseCutJob` (phase 3).
+/// One cut instance: a cutter positioned on the landscape. `name` is a
+/// user-facing label echoed back in progress events so they can name the
+/// base, not just its index.
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct Placement {
     pub cutter: CutterKind,
@@ -92,12 +87,8 @@ pub struct Cutter {
 /// The single owner of the nominal->cut derivation (docs/BASECUTTER.md "The
 /// plinth"): a real base is widest at the table and slopes inward going up,
 /// so the cut footprint (the plug's top face) is smaller than the nominal
-/// size by twice the taper inset. `base_cut.py`, the viewport overlay, and
-/// any future render-tool consumer must all compute this the same way —
-/// hence one function instead of three copies of the same formula.
-/// Called by `job::write_job_file` (injects the "cut" key base_cut.py
-/// consumes) and `commands::validate_placements` (the too-small-footprint
-/// guard) — no longer test-only.
+/// size by twice the taper inset. One function, not several copies of the
+/// same formula, so every consumer computes it identically.
 pub fn top_face_of(kind: &CutterKind, plinth: &PlinthParams) -> CutterKind {
     let inset = plinth.height_mm * plinth.taper_deg.to_radians().tan();
     let shrink = 2.0 * inset;
@@ -213,10 +204,9 @@ pub fn get_cutter_library() -> Vec<Cutter> {
     seed_library()
 }
 
-/// The caliper-measured plinth profile (see `PlinthParams::default`'s doc
-/// comment) as a command, so the frontend's "new job" defaults come from
-/// this one Rust value instead of a hand-copied literal that could drift
-/// from it.
+/// The caliper-measured plinth profile, as a command so the frontend's
+/// defaults come from this one Rust value instead of a hand-copied
+/// literal that could drift from it.
 #[tauri::command]
 #[specta::specta]
 pub fn get_plinth_defaults() -> PlinthParams {
