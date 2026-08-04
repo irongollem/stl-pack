@@ -314,6 +314,47 @@ pub(super) fn init_schema(conn: &Connection) -> Result<(), AppError> {
             }
         }
     }
+    // Non-TEXT columns needing their own declared type/default, same
+    // shape-checked idempotent ALTER as the nsfw column above — generalized
+    // here since base detection adds several at once.
+    let add_typed_column = |table: &str, column: &str, decl: &str| -> Result<(), AppError> {
+        let existing: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(1))
+                    .and_then(|rows| rows.collect())
+            })
+            .map_err(|e| AppError::ConfigError(format!("Failed to inspect {}: {}", table, e)))?;
+        if existing.iter().any(|c| c == column) {
+            return Ok(());
+        }
+        if let Err(e) = conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl),
+            [],
+        ) {
+            if !e.to_string().contains("duplicate column name") {
+                return Err(AppError::ConfigError(format!(
+                    "Failed to migrate {} (add {}): {}",
+                    table, column, e
+                )));
+            }
+        }
+        Ok(())
+    };
+    // Base-bottom detection from the mining pass (issue #18). base_checked
+    // distinguishes "checked, nothing conclusive" (NULL shape/mm) from
+    // "never checked" (0) — geometry_satisfies requires it set, so every
+    // pre-#18 row re-streams once and backfills these on the next mine run.
+    add_typed_column("file_geometry", "base_shape", "TEXT")?;
+    add_typed_column("file_geometry", "base_mm", "REAL")?;
+    add_typed_column("file_geometry", "base_checked", "INTEGER NOT NULL DEFAULT 0")?;
+    // Persists across visits so a suggestion the user declined doesn't nag
+    // on every drawer open.
+    add_typed_column(
+        "model_user_meta",
+        "base_suggestion_dismissed",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     // Outside the base batch: on a pre-existing db the column only exists
     // after the migration above, and indexing a missing column is an error
     // even under IF NOT EXISTS.

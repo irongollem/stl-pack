@@ -1,7 +1,7 @@
 use crate::error::AppError;
 use rusqlite::{params, Connection};
 
-use crate::catalog::stl_facts::StlFacts;
+use crate::catalog::stl_facts::{BaseShape, StlFacts};
 use crate::catalog::{DuplicateGroup, ModelFileGeometry};
 
 /// Sizes that occur more than once — the free prefilter for duplicate
@@ -76,7 +76,8 @@ pub fn stl_geometry_candidates(
 
 /// False (re-mine) only for a row whose open_edges is NULL while its
 /// tri_count now fits under `edge_cap` — raising the cap backfills
-/// instead of skipping forever.
+/// instead of skipping forever. Also false for a pre-#18 row (base_checked
+/// still 0), so every such row re-streams once and backfills its base facts.
 pub fn geometry_satisfies(
     conn: &Connection,
     content_hash: &str,
@@ -85,7 +86,8 @@ pub fn geometry_satisfies(
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM file_geometry
-             WHERE content_hash = ?1 AND (open_edges IS NOT NULL OR tri_count > ?2)",
+             WHERE content_hash = ?1 AND (open_edges IS NOT NULL OR tri_count > ?2)
+               AND base_checked = 1",
             params![content_hash, edge_cap],
             |row| row.get(0),
         )
@@ -93,7 +95,16 @@ pub fn geometry_satisfies(
     Ok(count > 0)
 }
 
-/// Stores bbox extents (max − min per axis), not the raw min/max.
+fn base_shape_str(shape: BaseShape) -> &'static str {
+    match shape {
+        BaseShape::Round => "round",
+        BaseShape::Square => "square",
+    }
+}
+
+/// Stores bbox extents (max − min per axis), not the raw min/max. Always
+/// sets base_checked = 1, even when facts.base is None — that's what tells
+/// geometry_satisfies this row has already been through base detection.
 pub fn store_file_geometry(
     conn: &Connection,
     content_hash: &str,
@@ -103,15 +114,23 @@ pub fn store_file_geometry(
     let x_mm = (facts.max.0 - facts.min.0) as f64;
     let y_mm = (facts.max.1 - facts.min.1) as f64;
     let z_mm = (facts.max.2 - facts.min.2) as f64;
+    let (base_shape, base_mm) = match facts.base {
+        Some((shape, mm)) => (Some(base_shape_str(shape)), Some(mm)),
+        None => (None, None),
+    };
     conn.execute(
         "INSERT INTO file_geometry
-             (content_hash, tri_count, x_mm, y_mm, z_mm, volume_mm3, open_edges, derived_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             (content_hash, tri_count, x_mm, y_mm, z_mm, volume_mm3, open_edges,
+              base_shape, base_mm, base_checked, derived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10)
          ON CONFLICT(content_hash) DO UPDATE SET
              tri_count = excluded.tri_count,
              x_mm = excluded.x_mm, y_mm = excluded.y_mm, z_mm = excluded.z_mm,
              volume_mm3 = excluded.volume_mm3,
              open_edges = excluded.open_edges,
+             base_shape = excluded.base_shape,
+             base_mm = excluded.base_mm,
+             base_checked = excluded.base_checked,
              derived_at = excluded.derived_at",
         params![
             content_hash,
@@ -121,6 +140,8 @@ pub fn store_file_geometry(
             z_mm,
             facts.volume_mm3,
             facts.open_edge_count,
+            base_shape,
+            base_mm,
             derived_at
         ],
     )

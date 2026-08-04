@@ -799,6 +799,7 @@ mod tests {
             max: (10.0, 10.0, z_mm),
             volume_mm3,
             open_edge_count: Some(0),
+            base: None,
         };
         store_file_geometry(&conn, "hash-tall", &facts(50.0, 2000.0), 1_000).unwrap();
         store_file_geometry(&conn, "hash-short", &facts(10.0, 500.0), 1_000).unwrap();
