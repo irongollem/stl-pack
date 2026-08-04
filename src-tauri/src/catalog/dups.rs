@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::db;
+use super::geometry;
 use super::DuplicateGroup;
 
 const PARTIAL_HASH_BYTES: usize = 128 * 1024;
@@ -39,9 +41,13 @@ pub fn file_identity(path: &Path) -> Option<String> {
 /// nearly free next to hashing): merges and external file swaps change
 /// identity without touching content, so a stale value would misreport
 /// what's reclaimable.
+///
+/// Stage 3's full `.stl` reads double as geometry mining — one pass over
+/// the same bytes — which is what `edge_cap` is for.
 pub fn find_duplicates(
     conn: &Connection,
     cancel: &AtomicBool,
+    edge_cap: u32,
     mut on_progress: impl FnMut(u32, u32),
 ) -> Result<Vec<DuplicateGroup>, AppError> {
     let candidates = db::duplicate_size_candidates(conn)?;
@@ -94,6 +100,10 @@ pub fn find_duplicates(
                 }
                 if cancel.load(Ordering::SeqCst) {
                     return Err(AppError::UserCancelled("Duplicate scan cancelled".into()));
+                }
+                if is_stl(Path::new(&path)) {
+                    hash_and_mine(conn, &path, edge_cap)?;
+                    continue;
                 }
                 let full = if needs_two_stages {
                     hash_file(Path::new(&path), None)
@@ -195,6 +205,31 @@ pub fn supports_links(path: &Path) -> bool {
     supported
 }
 
+fn is_stl(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("stl"))
+}
+
+/// A parse failure only skips the geometry write; the hash still lands,
+/// so mining can never change which files dup-match.
+fn hash_and_mine(conn: &Connection, path: &str, edge_cap: u32) -> Result<(), AppError> {
+    let Ok((hash, parsed)) = geometry::stream_mine(path, edge_cap) else {
+        return Ok(());
+    };
+    db::store_hash(conn, path, &hash)?;
+    if let Ok(facts) = parsed {
+        if !db::geometry_satisfies(conn, &hash, edge_cap)? {
+            let derived_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            db::store_file_geometry(conn, &hash, &facts, derived_at)?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn hash_file(path: &Path, limit: Option<usize>) -> Result<String, AppError> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| AppError::IoError(format!("Cannot open {}: {}", path.display(), e)))?;
@@ -221,6 +256,7 @@ pub(crate) fn hash_file(path: &Path, limit: Option<usize>) -> Result<String, App
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::stl_facts::EDGE_STATS_MAX_TRIS;
     use crate::catalog::{db, FileRow, ModelRow};
     use std::fs;
 
@@ -276,7 +312,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &rows, &models, &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let groups = find_duplicates(&conn, &cancel, |_, _| {}).unwrap();
+        let groups = find_duplicates(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].paths.len(), 2);
         // a and b are separate files on disk: both copies are real
@@ -318,7 +354,7 @@ mod tests {
         db::replace_catalog(&mut conn, &dir.to_string_lossy(), &rows, &[], &[], &[], &[]).unwrap();
 
         let cancel = AtomicBool::new(false);
-        let groups = find_duplicates(&conn, &cancel, |_, _| {}).unwrap();
+        let groups = find_duplicates(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].paths.len(), 3);
         // Three names, but a+b share one inode: only c is a reclaimable copy
@@ -366,6 +402,136 @@ mod tests {
         assert!(again_errors.is_empty());
 
         assert!(supports_links(&keep));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Mirrors geometry::tests::build_binary_stl, kept local since that
+    /// helper is private to its own module.
+    fn build_binary_stl(triangles: &[[(f32, f32, f32); 3]]) -> Vec<u8> {
+        let mut bytes = vec![0u8; 80];
+        bytes.extend_from_slice(&(triangles.len() as u32).to_le_bytes());
+        for tri in triangles {
+            bytes.extend_from_slice(&[0u8; 12]); // normal, unused
+            for &(x, y, z) in tri {
+                bytes.extend_from_slice(&x.to_le_bytes());
+                bytes.extend_from_slice(&y.to_le_bytes());
+                bytes.extend_from_slice(&z.to_le_bytes());
+            }
+            bytes.extend_from_slice(&[0u8; 2]); // attribute byte count
+        }
+        bytes
+    }
+
+    fn one_triangle_stl() -> Vec<u8> {
+        build_binary_stl(&[[(0.0, 0.0, 0.0), (5.0, 0.0, 0.0), (0.0, 5.0, 0.0)]])
+    }
+
+    fn stl_row(path: &Path, dir: &Path, size: i64) -> FileRow {
+        FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: path.file_name().unwrap().to_string_lossy().into_owned(),
+            extension: "stl".into(),
+            size_bytes: size,
+            modified_at: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn dup_scan_mines_geometry_from_its_own_full_read() {
+        let dir = std::env::temp_dir().join(format!("stlpack_dup_mine_test_{}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.stl");
+        let b = dir.join("b.stl");
+        let bytes = one_triangle_stl();
+        fs::write(&a, &bytes).unwrap();
+        fs::write(&b, &bytes).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let rows = vec![
+            stl_row(&a, &dir, bytes.len() as i64),
+            stl_row(&b, &dir, bytes.len() as i64),
+        ];
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 2,
+            ..Default::default()
+        };
+        db::test_init(&conn);
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &rows, &[model], &[], &[], &[])
+            .unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let groups = find_duplicates(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(groups.len(), 1);
+
+        let hash =
+            db::known_hash(&conn, &a.to_string_lossy()).expect("hash stored by the dup scan");
+        assert!(db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
+
+        // Both files gone: a re-read on the mine run would surface as
+        // `failed`, so `already_known` below proves the dup scan's stage-3
+        // read was the only disk access these files ever got.
+        fs::remove_file(&a).unwrap();
+        fs::remove_file(&b).unwrap();
+
+        let outcome = geometry::mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            outcome,
+            geometry::GeometryOutcome {
+                mined: 0,
+                already_known: 2,
+                failed: 0,
+            }
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn garbage_stl_pair_still_hashes_and_groups_despite_failing_to_parse() {
+        let dir =
+            std::env::temp_dir().join(format!("stlpack_dup_garbage_test_{}", std::process::id()));
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.stl");
+        let b = dir.join("b.stl");
+        // Past stream_mine's 84-byte header+count preamble, but the
+        // triangle count it implies is nonsense — the read succeeds, the
+        // parse doesn't, and dup detection must not tell the difference.
+        let junk = vec![7u8; 200];
+        fs::write(&a, &junk).unwrap();
+        fs::write(&b, &junk).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        let rows = vec![
+            stl_row(&a, &dir, junk.len() as i64),
+            stl_row(&b, &dir, junk.len() as i64),
+        ];
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 2,
+            ..Default::default()
+        };
+        db::test_init(&conn);
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &rows, &[model], &[], &[], &[])
+            .unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let groups = find_duplicates(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].paths.len(), 2);
+
+        let hash = db::known_hash(&conn, &a.to_string_lossy())
+            .expect("hash stored even though the bytes don't parse as STL");
+        assert!(!db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
 
         fs::remove_dir_all(&dir).ok();
     }

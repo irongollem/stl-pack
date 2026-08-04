@@ -70,7 +70,10 @@ pub struct GeometryOutcome {
 /// Outer Err: the read failed or the size changed mid-read — no hash is
 /// trustworthy, store nothing. Inner Err: the bytes hashed fine but are
 /// not a well-formed binary STL.
-fn stream_mine(path: &str, edge_cap: u32) -> std::io::Result<(String, Result<StlFacts, String>)> {
+pub(crate) fn stream_mine(
+    path: &str,
+    edge_cap: u32,
+) -> std::io::Result<(String, Result<StlFacts, String>)> {
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     let mut hasher = blake3::Hasher::new();

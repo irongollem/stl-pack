@@ -408,6 +408,14 @@ pub async fn start_duplicate_scan(app_handle: AppHandle) -> Result<String, AppEr
             "A pack job is running — scan for duplicates when it finishes".to_string(),
         ));
     }
+    // The dup scan's full .stl reads also mine geometry, so it resolves
+    // the same edge cap as the dedicated mine job
+    let edge_cap = crate::settings::get_settings(app_handle.clone())
+        .await
+        .ok()
+        .and_then(|s| s.edge_stats_max_tris)
+        .unwrap_or_else(geometry::recommended_edge_cap);
+
     let job_id = format!("dup:{}", Uuid::new_v4());
     let cancel = register_job(&job_id)?;
     let job_id_clone = job_id.clone();
@@ -424,7 +432,7 @@ pub async fn start_duplicate_scan(app_handle: AppHandle) -> Result<String, AppEr
             let mut last_emit = Instant::now();
             let progress_app = app_handle.clone();
             let progress_job = job_id_clone.clone();
-            dups::find_duplicates(&conn, &cancel, |processed, total| {
+            dups::find_duplicates(&conn, &cancel, edge_cap, |processed, total| {
                 if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
                     last_emit = Instant::now();
                     DuplicateStatus::Progress(DuplicateProgressStatus {
