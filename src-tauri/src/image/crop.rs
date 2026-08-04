@@ -8,11 +8,9 @@ use crate::error::AppError;
 
 #[allow(dead_code)]
 pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicImage, AppError> {
-    // Open the image
     let img = image::open(image_path)
         .map_err(|e| AppError::ImageProcessingError(format!("Failed to open image: {}", e)))?;
 
-    // Find the best crop area
     let result = smartcrop::find_best_crop(
         &img,
         NonZeroU32::new(size).unwrap(),
@@ -22,7 +20,6 @@ pub fn generate_smart_thumbnail(image_path: &Path, size: u32) -> Result<DynamicI
 
     let c = result.crop;
 
-    // Extract the crop suggestion
     let crop_sqr = img.crop_imm(c.x, c.y, c.width, c.height);
     let thumbnail = crop_sqr.resize(size, size, image::imageops::FilterType::Lanczos3);
 
