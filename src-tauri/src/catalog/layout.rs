@@ -1,18 +1,17 @@
-//! The canonical library layout — the single folder shape the normalizer
-//! moves toward and the release builder writes from day one (so releases
-//! built in Plinth stop future designers drifting into ad-hoc structures):
+//! The canonical library layout — the single folder shape scanned data
+//! and Plinth-built releases both converge on:
 //!
 //! ```text
 //! {root}/{Designer}/{YYYY-MM Release}/{Model}/{Supported|Unsupported}/[{variant}/]files
 //! ```
 //!
 //! The Designer tier is skipped when the catalog folder itself is named
-//! for the designer (the add-one-designer-folder-at-a-time workflow).
+//! for the designer.
 //!
-//! Poses are deliberately NOT folders: a pose is metadata (file_variants /
-//! model.json file_poses) and shows up in file NAMES, so a whole pose set
-//! prints in one multi-select without folder-diving. Everything here is
-//! pure path math — no filesystem, no database — so it unit-tests exactly.
+//! Poses are deliberately NOT folders: a pose is metadata and shows up in
+//! file NAMES instead, so a whole pose set prints in one multi-select
+//! without folder-diving. Everything here is pure path math — no
+//! filesystem, no database — so it unit-tests exactly.
 
 use std::path::{Path, PathBuf};
 
@@ -49,8 +48,8 @@ pub fn sanitize_segment(name: &str) -> String {
     }
 }
 
-/// "M/YYYY" (release builder) or "YYYY-MM" (scanner-derived) -> "YYYY-MM".
-/// Anything else is unusable for sorting and returns None.
+/// Two input shapes ("M/YYYY" and "YYYY-MM") both fold to "YYYY-MM";
+/// anything else is unusable for sorting and returns None.
 fn sortable_date(date: &str) -> Option<String> {
     let date = date.trim();
     if let Some((month, year)) = date.split_once('/') {
@@ -114,8 +113,8 @@ pub fn support_segment(support: Option<&str>) -> Option<&'static str> {
 /// The designer tier under a catalog root. A catalog folder that IS the
 /// designer's folder ("…/dm_stash" added as a root) already spells the
 /// designer — adding the segment again would nest DM Stash/DM Stash.
-/// Matched with the same fuzzy key as designer inference, so
-/// spelling/punctuation differences don't fool it.
+/// Matched with scanner::alnum_key so spelling/punctuation differences
+/// don't fool it.
 fn designer_tier(root: &Path, designer: &str) -> PathBuf {
     let root_names_designer = root.file_name().is_some_and(|name| {
         super::scanner::alnum_key(&name.to_string_lossy()) == super::scanner::alnum_key(designer)
