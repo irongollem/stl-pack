@@ -406,9 +406,9 @@ async cancelCatalogJob(jobId: string) : Promise<Result<null, AppError>> {
     else return { status: "error", error: e  as any };
 }
 },
-async searchCatalog(query: string, tags: string[], limit: number, offset: number) : Promise<Result<CatalogSearchResult, AppError>> {
+async searchCatalog(query: string, tags: string[], geometry: GeometryRange, limit: number, offset: number) : Promise<Result<CatalogSearchResult, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("search_catalog", { query, tags, limit, offset }) };
+    return { status: "ok", data: await TAURI_INVOKE("search_catalog", { query, tags, geometry, limit, offset }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -712,9 +712,9 @@ async finalizeNormalize(groupNames: string[], oldDirs: string[]) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
-async searchCatalogGroups(query: string, tags: string[], designer: string | null, sort: string | null, limit: number, offset: number) : Promise<Result<CatalogGroupResult, AppError>> {
+async searchCatalogGroups(query: string, tags: string[], designer: string | null, geometry: GeometryRange, sort: string | null, limit: number, offset: number) : Promise<Result<CatalogGroupResult, AppError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("search_catalog_groups", { query, tags, designer, sort, limit, offset }) };
+    return { status: "ok", data: await TAURI_INVOKE("search_catalog_groups", { query, tags, designer, geometry, sort, limit, offset }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1501,8 +1501,23 @@ packed?: boolean;
  * True when ANY member is effectively 18+ — the card-level badge and
  * what the browse filter hides when Settings' "Show 18+" is off.
  */
-nsfw?: boolean }
-export type CatalogGroupResult = { groups: CatalogGroup[]; total: number }
+nsfw?: boolean; 
+/**
+ * Tallest member's z-extent in mm, MAX across the group. None means no
+ * member has mined geometry yet.
+ */
+height_mm?: number | null; 
+/**
+ * Total print volume in mm³, SUM across the group's mined files. None
+ * means no member has mined geometry yet.
+ */
+volume_mm3?: number | null }
+export type CatalogGroupResult = { groups: CatalogGroup[]; total: number; 
+/**
+ * Groups hidden by an active height/volume filter purely for lack of
+ * mined geometry — see db::search_groups' not_mined_count doc.
+ */
+not_mined_count?: number }
 /**
  * One configured catalog folder and its indexed footprint — a row in the
  * roots management UI. Zero counts with no last_scan mean "added but never
@@ -1675,6 +1690,13 @@ export type GeometryCancelledStatus = { job_id: string }
 export type GeometryCompletedStatus = { job_id: string; mined: number; already_known: number; failed: number }
 export type GeometryFailedStatus = { job_id: string; error: string }
 export type GeometryProgressStatus = { job_id: string; processed: number; total: number }
+/**
+ * Height/volume bounds for the geometry facet, bundled into one struct
+ * rather than four loose args: specta's SpectaFn tops out at 10 function
+ * parameters, and search_catalog_groups (app_handle, query, tags,
+ * designer, sort, limit, offset) was already six away from that ceiling.
+ */
+export type GeometryRange = { height_min_mm: number | null; height_max_mm: number | null; volume_min_mm3: number | null; volume_max_mm3: number | null }
 export type GeometryStartedStatus = { job_id: string }
 export type GeometryStatus = { Started: GeometryStartedStatus } | { Progress: GeometryProgressStatus } | { Completed: GeometryCompletedStatus } | { Failed: GeometryFailedStatus } | { Cancelled: GeometryCancelledStatus }
 /**

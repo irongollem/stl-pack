@@ -188,12 +188,36 @@ pub struct CatalogGroup {
     /// what the browse filter hides when Settings' "Show 18+" is off.
     #[serde(default)]
     pub nsfw: bool,
+    /// Tallest member's z-extent in mm, MAX across the group. None means no
+    /// member has mined geometry yet.
+    #[serde(default)]
+    pub height_mm: Option<f64>,
+    /// Total print volume in mm³, SUM across the group's mined files. None
+    /// means no member has mined geometry yet.
+    #[serde(default)]
+    pub volume_mm3: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct CatalogGroupResult {
     pub groups: Vec<CatalogGroup>,
     pub total: u32,
+    /// Groups hidden by an active height/volume filter purely for lack of
+    /// mined geometry — see db::search_groups' not_mined_count doc.
+    #[serde(default)]
+    pub not_mined_count: u32,
+}
+
+/// Height/volume bounds for the geometry facet, bundled into one struct
+/// rather than four loose args: specta's SpectaFn tops out at 10 function
+/// parameters, and search_catalog_groups (app_handle, query, tags,
+/// designer, sort, limit, offset) was already six away from that ceiling.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, Type)]
+pub struct GeometryRange {
+    pub height_min_mm: Option<f64>,
+    pub height_max_mm: Option<f64>,
+    pub volume_min_mm3: Option<f64>,
+    pub volume_max_mm3: Option<f64>,
 }
 
 /// One configured catalog folder and its indexed footprint — a row in the
