@@ -1,9 +1,10 @@
-//! Geometry facts from binary STL triangle records, accumulated
-//! incrementally so the miner can stream instead of buffering whole files.
+//! Geometry facts from STL triangle records — binary or ASCII —
+//! accumulated incrementally so the miner can stream instead of
+//! buffering whole files.
 
 use std::collections::HashMap;
 
-/// Facts derived from one binary STL in a single pass.
+/// Facts derived from one STL (binary or ASCII) in a single pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StlFacts {
     pub tri_count: u32,
@@ -24,6 +25,10 @@ pub(crate) const HEADER_LEN: usize = 80;
 pub(crate) const COUNT_LEN: usize = 4;
 pub(crate) const RECORD_LEN: usize = 50; // 12 (normal) + 3*12 (verts) + 2 (attr byte count)
 
+// ASCII declares no triangle count up front; this stands in for one only
+// to decide the edge-map gate before the real count is known.
+const ASCII_BYTES_PER_FACET_ESTIMATE: u64 = 200;
+
 // Keyed on the raw f32 bits, not the values: NaN != NaN and -0.0/0.0
 // differ, so a naive == would split or merge vertices.
 type VertexKey = (u32, u32, u32);
@@ -41,32 +46,32 @@ fn edge_key(a: VertexKey, b: VertexKey) -> EdgeKey {
 }
 
 pub struct FactsAccumulator {
-    tri_count: u32,
+    pushed: u32,
     min: [f32; 3],
     max: [f32; 3],
     volume_acc: f64,
-    // None when tri_count exceeds the cap: no per-edge allocation at all,
-    // not even an empty map, so the skip actually bounds memory.
+    // None when the constructor's tri_count_hint exceeded edge_cap: no
+    // per-edge allocation at all, not even an empty map, so the skip
+    // actually bounds memory.
     edge_counts: Option<HashMap<EdgeKey, u32>>,
 }
 
 impl FactsAccumulator {
-    /// The caller validates byte length against `tri_count` and pushes
-    /// exactly that many records; `edge_cap` gates the edge map only.
-    pub(crate) fn with_cap(tri_count: u32, edge_cap: u32) -> Result<Self, String> {
-        if tri_count == 0 {
-            return Err("binary STL header reports zero triangles".to_string());
-        }
-        Ok(Self {
-            tri_count,
+    /// `tri_count_hint` gates the edge map only — binary passes the
+    /// declared count, ASCII an estimate — and isn't kept afterward; the
+    /// real facet count is the `push_record` tally `finish()` reports.
+    pub(crate) fn with_cap(tri_count_hint: u32, edge_cap: u32) -> Self {
+        Self {
+            pushed: 0,
             min: [f32::INFINITY; 3],
             max: [f32::NEG_INFINITY; 3],
             volume_acc: 0.0,
-            edge_counts: (tri_count <= edge_cap).then(HashMap::new),
-        })
+            edge_counts: (tri_count_hint <= edge_cap).then(HashMap::new),
+        }
     }
 
     pub fn push_record(&mut self, record: &[u8; RECORD_LEN]) {
+        self.pushed += 1;
         let mut offset = 12; // skip the facet normal
 
         let mut verts_f32 = [[0.0f32; 3]; 3];
@@ -120,12 +125,189 @@ impl FactsAccumulator {
             .edge_counts
             .map(|counts| counts.values().filter(|&&count| count != 2).count() as u32);
         StlFacts {
-            tri_count: self.tri_count,
+            tri_count: self.pushed,
             min: (self.min[0], self.min[1], self.min[2]),
             max: (self.max[0], self.max[1], self.max[2]),
             volume_mm3: self.volume_acc.abs(),
             open_edge_count,
         }
+    }
+}
+
+/// True when `bytes` (a whole-file preamble, however short) is the start
+/// of an ASCII STL: `solid` + whitespace at offset 0, spec-exact — no
+/// leading whitespace — and nothing beyond it that a binary header
+/// wouldn't leave as printable text.
+pub(crate) fn is_ascii_stl_preamble(bytes: &[u8]) -> bool {
+    if bytes.len() < 5 || !bytes[..5].eq_ignore_ascii_case(b"solid") {
+        return false;
+    }
+    if let Some(&next) = bytes.get(5) {
+        if !next.is_ascii_whitespace() {
+            return false;
+        }
+    }
+    bytes.iter().all(|&b| b.is_ascii_graphic() || b.is_ascii_whitespace())
+}
+
+pub(crate) fn estimate_ascii_tri_count(file_len: u64) -> u32 {
+    u32::try_from(file_len / ASCII_BYTES_PER_FACET_ESTIMATE).unwrap_or(u32::MAX)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AsciiState {
+    ExpectSolid,
+    ExpectFacetOrEnd,
+    ExpectOuterLoop,
+    ExpectVertex(u8),
+    ExpectEndLoop,
+    ExpectEndFacet,
+    Done,
+}
+
+/// Line-buffering ASCII STL parser: feeds each completed facet through
+/// `FactsAccumulator::push_record` as a synthesized 50-byte record (zero
+/// normal, the 3 parsed vertices, zero attribute bytes), reusing the
+/// binary math untouched. Bounded memory — only the current partial line
+/// is buffered, never the whole file.
+pub(crate) struct AsciiStlParser {
+    state: AsciiState,
+    line_buf: Vec<u8>,
+    verts: [[f32; 3]; 3],
+    acc: FactsAccumulator,
+}
+
+impl AsciiStlParser {
+    pub(crate) fn new(acc: FactsAccumulator) -> Self {
+        Self {
+            state: AsciiState::ExpectSolid,
+            line_buf: Vec::new(),
+            verts: [[0.0; 3]; 3],
+            acc,
+        }
+    }
+
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Result<(), String> {
+        // Without a cap, a newline-less file that sniffed as ASCII would
+        // buffer whole in line_buf — no real STL line comes near 4 KiB.
+        const MAX_LINE_BYTES: usize = 4096;
+        for &b in bytes {
+            if b == b'\n' {
+                self.process_line()?;
+                self.line_buf.clear();
+            } else {
+                self.line_buf.push(b);
+                if self.line_buf.len() > MAX_LINE_BYTES {
+                    return Err(format!(
+                        "line exceeds {MAX_LINE_BYTES} bytes — not an ASCII STL"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(mut self) -> Result<StlFacts, String> {
+        if !self.line_buf.is_empty() {
+            self.process_line()?;
+        }
+        if self.state != AsciiState::Done {
+            return Err("ASCII STL ended before endsolid".to_string());
+        }
+        let facts = self.acc.finish();
+        if facts.tri_count == 0 {
+            return Err("ASCII STL declares zero facets".to_string());
+        }
+        Ok(facts)
+    }
+
+    fn process_line(&mut self) -> Result<(), String> {
+        // \r\n survives as a trailing \r here; trim drops it along with
+        // any other incidental whitespace the grammar tolerates.
+        let line = std::str::from_utf8(&self.line_buf)
+            .map_err(|_| "invalid UTF-8 in ASCII STL".to_string())?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let tokens: Vec<&str> = trimmed.split_ascii_whitespace().collect();
+        let keyword = tokens[0].to_ascii_lowercase();
+
+        match self.state {
+            AsciiState::ExpectSolid => {
+                if keyword != "solid" {
+                    return Err(format!("expected an ASCII STL 'solid' header, got {trimmed:?}"));
+                }
+                self.state = AsciiState::ExpectFacetOrEnd;
+            }
+            AsciiState::ExpectFacetOrEnd => {
+                if keyword == "endsolid" {
+                    self.state = AsciiState::Done;
+                } else if keyword == "facet" {
+                    if tokens.len() != 5 || !tokens[1].eq_ignore_ascii_case("normal") {
+                        return Err(format!("malformed 'facet normal' line: {trimmed:?}"));
+                    }
+                    for tok in &tokens[2..5] {
+                        tok.parse::<f32>()
+                            .map_err(|_| format!("bad float in facet normal: {trimmed:?}"))?;
+                    }
+                    self.state = AsciiState::ExpectOuterLoop;
+                } else {
+                    return Err(format!("expected 'facet' or 'endsolid', got {trimmed:?}"));
+                }
+            }
+            AsciiState::ExpectOuterLoop => {
+                if tokens.len() != 2 || keyword != "outer" || !tokens[1].eq_ignore_ascii_case("loop") {
+                    return Err(format!("expected 'outer loop', got {trimmed:?}"));
+                }
+                self.state = AsciiState::ExpectVertex(0);
+            }
+            AsciiState::ExpectVertex(n) => {
+                if tokens.len() != 4 || keyword != "vertex" {
+                    return Err(format!("expected 'vertex x y z', got {trimmed:?}"));
+                }
+                for (axis, tok) in tokens[1..4].iter().enumerate() {
+                    let v: f32 = tok
+                        .parse()
+                        .map_err(|_| format!("bad float in vertex line: {trimmed:?}"))?;
+                    self.verts[n as usize][axis] = v;
+                }
+                self.state = if n == 2 {
+                    self.push_facet();
+                    AsciiState::ExpectEndLoop
+                } else {
+                    AsciiState::ExpectVertex(n + 1)
+                };
+            }
+            AsciiState::ExpectEndLoop => {
+                if keyword != "endloop" || tokens.len() != 1 {
+                    return Err(format!("expected 'endloop', got {trimmed:?}"));
+                }
+                self.state = AsciiState::ExpectEndFacet;
+            }
+            AsciiState::ExpectEndFacet => {
+                if keyword != "endfacet" || tokens.len() != 1 {
+                    return Err(format!("expected 'endfacet', got {trimmed:?}"));
+                }
+                self.state = AsciiState::ExpectFacetOrEnd;
+            }
+            AsciiState::Done => {
+                return Err(format!("trailing content after endsolid: {trimmed:?}"));
+            }
+        }
+        Ok(())
+    }
+
+    fn push_facet(&mut self) {
+        let mut record = [0u8; RECORD_LEN];
+        let mut offset = 12;
+        for vert in &self.verts {
+            for &coord in vert {
+                record[offset..offset + 4].copy_from_slice(&coord.to_le_bytes());
+                offset += 4;
+            }
+        }
+        self.acc.push_record(&record);
     }
 }
 
@@ -162,14 +344,14 @@ fn parse_binary_stl_facts_with_cap(bytes: &[u8], edge_cap: u32) -> Result<StlFac
     if bytes.len() != expected_len {
         return Err(format!(
             "byte length {} does not match the {} triangles the header declares \
-             (expected exactly {} bytes) — not a well-formed binary STL, or an ASCII STL",
+             (expected exactly {} bytes)",
             bytes.len(),
             tri_count,
             expected_len
         ));
     }
 
-    let mut acc = FactsAccumulator::with_cap(tri_count, edge_cap)?;
+    let mut acc = FactsAccumulator::with_cap(tri_count, edge_cap);
     let mut offset = HEADER_LEN + COUNT_LEN;
     for _ in 0..tri_count {
         let record: &[u8; RECORD_LEN] = bytes[offset..offset + RECORD_LEN]
@@ -367,5 +549,108 @@ mod tests {
         let facts_uncapped =
             parse_binary_stl_facts_with_cap(&bytes, 2).expect("well-formed two-tri STL");
         assert!(facts_uncapped.open_edge_count.is_some());
+    }
+
+    fn ascii_stl_from_triangles(triangles: &[[(f32, f32, f32); 3]]) -> Vec<u8> {
+        let mut text = String::from("solid test\n");
+        for tri in triangles {
+            text.push_str("facet normal 0 0 0\nouter loop\n");
+            for &(x, y, z) in tri {
+                text.push_str(&format!("vertex {x} {y} {z}\n"));
+            }
+            text.push_str("endloop\nendfacet\n");
+        }
+        text.push_str("endsolid test\n");
+        text.into_bytes()
+    }
+
+    fn parse_ascii_stl_facts(bytes: &[u8]) -> Result<StlFacts, String> {
+        let mut parser = AsciiStlParser::new(FactsAccumulator::with_cap(
+            estimate_ascii_tri_count(bytes.len() as u64),
+            EDGE_STATS_MAX_TRIS,
+        ));
+        parser.feed(bytes)?;
+        parser.finish()
+    }
+
+    #[test]
+    fn ascii_cube_reports_the_same_facts_as_its_binary_twin() {
+        let bytes = ascii_stl_from_triangles(&cube_triangles());
+        let facts = parse_ascii_stl_facts(&bytes).expect("well-formed ASCII cube STL");
+        assert_eq!(facts.tri_count, 12);
+        assert_eq!(facts.min, (0.0, 0.0, 0.0));
+        assert_eq!(facts.max, (10.0, 10.0, 10.0));
+        assert!(
+            (facts.volume_mm3 - 1000.0).abs() < 1e-3,
+            "got {}",
+            facts.volume_mm3
+        );
+        assert_eq!(facts.open_edge_count, Some(0));
+    }
+
+    #[test]
+    fn ascii_parser_is_case_insensitive_and_tolerates_crlf() {
+        let bytes = b"SOLID test\r\nFACET NORMAL 0 0 1\r\nOUTER LOOP\r\n\
+                      VERTEX 0 0 0\r\nVERTEX 1 0 0\r\nVERTEX 0 1 0\r\n\
+                      ENDLOOP\r\nENDFACET\r\nENDSOLID test\r\n";
+        let facts = parse_ascii_stl_facts(bytes).expect("case-insensitive CRLF ASCII STL");
+        assert_eq!(facts.tri_count, 1);
+    }
+
+    #[test]
+    fn ascii_parser_rejects_a_non_numeric_vertex_coordinate() {
+        let bytes = b"solid test\nfacet normal 0 0 1\nouter loop\n\
+                      vertex 0 0 0\nvertex not-a-number 0 0\nvertex 0 1 0\n\
+                      endloop\nendfacet\nendsolid test\n";
+        let err = parse_ascii_stl_facts(bytes).unwrap_err();
+        assert!(err.contains("bad float"), "got: {err}");
+    }
+
+    #[test]
+    fn ascii_parser_rejects_a_missing_endloop() {
+        let bytes = b"solid test\nfacet normal 0 0 1\nouter loop\n\
+                      vertex 0 0 0\nvertex 1 0 0\nvertex 0 1 0\n\
+                      endfacet\nendsolid test\n";
+        let err = parse_ascii_stl_facts(bytes).unwrap_err();
+        assert!(err.contains("endloop"), "got: {err}");
+    }
+
+    #[test]
+    fn ascii_parser_rejects_trailing_content_after_endsolid() {
+        let mut bytes =
+            ascii_stl_from_triangles(&[[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]]);
+        bytes.extend_from_slice(b"garbage\n");
+        let err = parse_ascii_stl_facts(&bytes).unwrap_err();
+        assert!(err.contains("trailing content"), "got: {err}");
+    }
+
+    #[test]
+    fn ascii_parser_rejects_zero_facets() {
+        let err = parse_ascii_stl_facts(b"solid x\nendsolid x\n").unwrap_err();
+        assert!(err.contains("zero facets"), "got: {err}");
+    }
+
+    #[test]
+    fn ascii_parser_rejects_truncated_structure() {
+        let bytes = b"solid test\nfacet normal 0 0 1\nouter loop\nvertex 0 0 0\n";
+        let err = parse_ascii_stl_facts(bytes).unwrap_err();
+        assert!(err.contains("ended before endsolid"), "got: {err}");
+    }
+
+    #[test]
+    fn ascii_parser_rejects_an_endless_line_instead_of_buffering_it() {
+        let mut bytes = b"solid test\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b'x', 10_000));
+        let err = parse_ascii_stl_facts(&bytes).unwrap_err();
+        assert!(err.contains("exceeds"), "got: {err}");
+    }
+
+    #[test]
+    fn is_ascii_stl_preamble_detects_the_solid_keyword_and_rejects_lookalikes() {
+        assert!(is_ascii_stl_preamble(b"solid test\n"));
+        assert!(is_ascii_stl_preamble(b"SOLID test\n"));
+        assert!(!is_ascii_stl_preamble(b"solidify\n")); // no delimiter after "solid"
+        assert!(!is_ascii_stl_preamble(b" solid test\n")); // leading whitespace not allowed
+        assert!(!is_ascii_stl_preamble(b"solid \0\x01binary garbage"));
     }
 }
