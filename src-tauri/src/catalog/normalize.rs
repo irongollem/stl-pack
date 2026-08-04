@@ -263,7 +263,7 @@ fn is_litter(name: &str) -> bool {
 /// The plan's merge paths ask the DISK, not the files table, on purpose:
 /// the scanner only indexes model files, so images/readmes/licences have
 /// no rows at all — an index-driven merge would silently leave them
-/// behind (and the vanished-production-thumbnail bug was exactly this).
+/// behind.
 fn disk_files(dir: &Path) -> Vec<FileRowLite> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
@@ -1222,17 +1222,14 @@ pub fn finalize(
 
         // Group members by the LEAF the plan sent their files to — NOT by
         // their plan-time dir. Per-file merges empty the old pose dirs and
-        // the sweep removes them; writing metadata there throws it away
-        // with the dir. That is exactly how Dark Wardens' Supported side
-        // lost its identity: sidecars went into dying pose folders while
-        // the variant folders holding every file got nothing, and the next
-        // scan shattered them into heuristic per-variant cards.
+        // the sweep removes them, so writing metadata there would throw it
+        // away with the dir.
+        //
         // Leaves are discovered ON DISK: the canonical shape is
         // M[/Build[/Variant]], and any of those dirs directly holding model
         // files gets the authoritative sidecar. Disk-driven because member
-        // rows may describe pre-fan-out dump dirs that no longer exist
-        // (file-level variant materialization) — metadata goes where the
-        // FILES landed.
+        // rows may describe pre-fan-out dump dirs that no longer exist —
+        // metadata goes where the FILES landed.
         let member_refs: Vec<&MemberRow> = members.iter().collect();
         let variant_case = canonical_variants(&member_refs);
         let holds_models = |dir: &Path| {
@@ -1295,10 +1292,10 @@ pub fn finalize(
         // or a sibling folder like "Images"/"renders" some designers ship
         // beside Supported/Unsupported — are candidate fallback previews.
         // The disk, not the files table: the scanner never indexes images,
-        // so an index lookup wrote empty images lists and the sidecar
-        // (being authoritative) then ERASED previews that heuristics used
-        // to find. Excludes anything inside a build/variant leaf: that
-        // image is the leaf's OWN preview (own_images below).
+        // so an index lookup would write an empty list and the sidecar
+        // (being authoritative) would erase what heuristics found.
+        // Excludes anything inside a build/variant leaf: that image is the
+        // leaf's OWN preview (own_images below).
         let leaf_dirs: Vec<&str> = leaf_specs
             .iter()
             .map(|(path, _, _)| path.as_str())
@@ -2038,13 +2035,12 @@ mod tests {
 
     #[test]
     fn merges_into_an_already_existing_build_folder() {
-        // The Centaurs incident: Supported/ already existed at the target
-        // (holding earlier-merged files) while pose A still lived in a
-        // nested A/ subdir inside it. The old planner elected A for a dir
-        // rename ONTO its own parent — "Destination already exists" plus a
-        // wall of dependent "Source not found" errors. An occupied leaf is
-        // normal (second batch of a release, partial earlier run): merge
-        // INTO it per-file, colliding against what's already there.
+        // Supported/ already exists at the target (holding earlier-merged
+        // files) while pose A still lives in a nested A/ subdir inside it.
+        // A dir-rename of A onto its own parent would be wrong here — an
+        // occupied leaf is normal (second batch of a release, partial
+        // earlier run): merge INTO it per-file, colliding against what's
+        // already there.
         let root = std::env::temp_dir().join(format!("plinth_norm_occ_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let leaf = root.join("Bestiarum/2026-07 Dread Swamp/Centaurs/Supported");
@@ -2111,11 +2107,10 @@ mod tests {
     fn preview_in_a_sibling_images_folder_is_not_lost() {
         // Some designers ship a promo thumbnail beside Supported/Unsupported
         // in its own "Images" folder rather than directly at the model
-        // root. Before the fix, finalize's root-image lookup was an EXACT
-        // dir match, so it never saw a nested sibling folder — the
-        // authoritative model.json ended up with no images at all, and the
-        // scanner (which trusts model.json completely once it exists) lost
-        // the preview on the very next rescan.
+        // root. An EXACT dir match on the root-image lookup would miss it
+        // — the authoritative model.json would carry no images, and the
+        // scanner (which trusts model.json completely once it exists)
+        // would lose the preview on the next rescan.
         let root = std::env::temp_dir().join(format!("plinth_norm_img_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let old = root.join("Collector of Names");
@@ -2214,13 +2209,11 @@ mod tests {
 
     #[test]
     fn wholesale_move_merges_into_dirs_that_travel_along() {
-        // The Dark Wardens incident. Wholesale-moving the base carries
-        // Supported/ (and the variant dirs) along — so those leaves EXIST
-        // the moment phase 1 lands, even though Path::exists() said no at
-        // plan time. The old plan then dir-renamed Supported/Clean Bases
-        // onto its own parent: 'Destination already exists' + 39 skipped.
-        // Leaf existence must be asked at the PRE-IMAGE path, and a member
-        // nested under its own leaf must always merge per-file (upward).
+        // Wholesale-moving the base carries Supported/ (and the variant
+        // dirs) along — so those leaves EXIST the moment phase 1 lands,
+        // even though Path::exists() said no at plan time. Leaf existence
+        // must be asked at the PRE-IMAGE path, and a member nested under
+        // its own leaf must always merge per-file (upward).
         let root = std::env::temp_dir().join(format!("plinth_norm_pre_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let old = root.join("trapper_tier/Dark Wardens");
@@ -2320,11 +2313,11 @@ mod tests {
 
     #[test]
     fn file_level_variants_materialize_as_folders() {
-        // Unicorn Cavalry: 'tons of variants' filed onto FILES in the
-        // drawer, but the member row itself carries variant NULL — so the
-        // old plan flattened everything into Supported/ and the variants
-        // existed only as invisible metadata. Files with variant
-        // assignments must fan out to their own variant folders.
+        // 'tons of variants' filed onto FILES in the drawer, but the member
+        // row itself carries variant NULL. Member-level bucketing alone
+        // would flatten everything into Supported/, leaving the variants
+        // as invisible metadata — files with variant assignments must fan
+        // out to their own variant folders instead.
         let root = std::env::temp_dir().join(format!("plinth_norm_fan_{}", std::process::id()));
         fs::remove_dir_all(&root).ok();
         let old = root.join("unicorn cavalry");
@@ -2430,9 +2423,8 @@ mod tests {
         // the emptied dump dir is gone
         assert!(!old.exists());
 
-        // idempotence — THE bug that kept the badge stuck on 'fix folder
-        // structure': re-recording already-recorded poses made the plan
-        // permanently non-empty
+        // idempotence: re-recording already-recorded poses would make the
+        // plan permanently non-empty
         let again = super::plan(&conn, std::slice::from_ref(&root), None, None, None).unwrap();
         assert_eq!(again.groups.len(), 0, "ghost ops: {:?}", again.groups);
         assert_eq!(again.clean_groups, 1);
