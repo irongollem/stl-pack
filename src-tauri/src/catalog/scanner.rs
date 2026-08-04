@@ -15,10 +15,9 @@ use super::{pack, FileRow, FileVariantRow, ModelRow, PackRow, IMAGE_EXTENSIONS, 
 /// the read side of metadata portability: whatever a release was packed with
 /// is restored on scan. See docs/3PK.md.
 ///
-/// `pub(crate)`, fields included, so basecutter::commands' export sidecar
-/// writer and its tests can parse a freshly written sidecar into the exact
-/// type the scanner will later read it back as — one struct, no drift
-/// between "what we write" and "what we read".
+/// `pub(crate)`, fields included, so a sidecar writer elsewhere in the
+/// crate can round-trip through this exact type — no drift between
+/// "what we write" and "what we read".
 #[derive(Deserialize)]
 pub(crate) struct ModelJson {
     #[serde(default)]
@@ -232,12 +231,10 @@ pub fn scan(
     on_progress(seen, "");
 
     // Self-heal: an archive whose sidecar is missing or unreadable would
-    // silently drop its model from the catalog. Rebuild the sidecar from the
-    // archive itself (decompress + rehash — the slow path, but it only runs
-    // for damaged dirs and permanently fixes them). ONLY when the dir has no
-    // loose model files: with them present this is a crash-mid-pack orphan,
-    // and pack_model's discard-and-repack path is the correct converger — a
-    // rebuilt sidecar would freeze that dir in a half-packed limbo.
+    // silently drop its model from the catalog. Rebuild it here (decompress
+    // + rehash — slow, but only for damaged dirs) ONLY when no loose model
+    // files remain: with them present this is a crash-mid-pack orphan, and
+    // pack_model's discard-and-repack path is the correct converger.
     for dir_path in archive_dirs {
         if cancel.load(Ordering::SeqCst) {
             return Err(AppError::UserCancelled("Scan cancelled".to_string()));
@@ -255,10 +252,9 @@ pub fn scan(
 
     // Materialize packed models into the same rows loose ones produce: each
     // pack.json entry becomes a FileRow at the path the file would occupy,
-    // feeding the identical DirInfo accumulation so leaf models, support
-    // inference and file_poses restoration work unchanged. Loose wins: a
-    // path that was walked as a real file (crash mid-pack, ephemeral
-    // extract) is already indexed and its pack entry is skipped.
+    // feeding the identical DirInfo accumulation. Loose wins: a path
+    // already walked as a real file (crash mid-pack, ephemeral extract)
+    // skips its pack entry.
     let mut pack_rows: Vec<PackRow> = Vec::new();
     if !packs.is_empty() {
         let walked: std::collections::HashSet<String> =
@@ -340,9 +336,8 @@ pub fn scan(
         }
         let release = nearest_release(&releases, dir_path);
         // An image beside the files, else one in a nested folder — creators
-        // routinely ship renders in a "renders"/"images" subdir next to the
-        // STLs, and those dirs hold no model files so they never become
-        // models themselves; without this lookup their images were orphaned
+        // routinely ship renders in a "renders"/"images" subdir, which
+        // holds no model files itself and so never becomes a model.
         let own_image = info
             .first_image
             .clone()
@@ -368,8 +363,8 @@ pub fn scan(
                 }
                 (
                     // sidecars are an interchange format — hand-edited or
-                    // legacy ones ship stray whitespace ("Unsupported "
-                    // taught us that lesson at the folder level)
+                    // legacy ones ship stray whitespace, so values are
+                    // trimmed on the way in.
                     meta.name.trim().to_string(),
                     meta.description
                         .as_deref()
@@ -553,8 +548,6 @@ fn ancestor_image(
     None
 }
 
-// ---- stacked-folder identity inference (heuristic models only) ----
-
 struct InferredModel {
     name: String,
     /// The base name without the pose suffix — variants of one model share
@@ -605,13 +598,13 @@ fn infer_model_identity(root: &Path, dir_path: &str) -> InferredModel {
         if let Some(status) = support_from_segment(&segment) {
             support_status.get_or_insert_with(|| status.to_string());
             // Demotion: in `Butterfly Cavalry/Supported/Spear/A` the climb
-            // reads A (pose) then Spear (name candidate) then this support
-            // segment — but a "name" wedged between a pose below and support
-            // above is a weapon/mount facet, not the model. Demote it to
-            // variant and keep climbing for the real name. The knights' flat
-            // `Supported/A/Spear` shape is untouched: there the name is the
-            // leaf itself, found before any pose, so name_above_pose stays
-            // false and "Spear" remains the group (combine handles those).
+            // reads A (pose), then Spear (name candidate), then this
+            // support segment — but a name wedged between a pose below and
+            // support above is a weapon/mount facet, not the model. Demote
+            // it to variant and keep climbing for the real name. The
+            // knights' flat `Supported/A/Spear` shape is untouched: its
+            // name is the leaf, found before any pose, so name_above_pose
+            // stays false.
             if name_above_pose && variant.is_none() {
                 variant = base_name.take().inspect(|_| {
                     variant_dir = base_dir.take();
@@ -1017,12 +1010,10 @@ mod tests {
 
     #[test]
     fn relative_image_refs_normalize_to_clean_paths() {
-        // The normalizer's sidecars reference the model-root render from a
-        // build folder as "../render.png". Storing the joined path RAW kept
-        // the ".." segment — and the asset protocol refuses traversal
-        // segments, so every such preview silently failed to load in the
-        // UI (broken card image after each cleanup) while is_file() and
-        // the DB row both looked perfectly healthy.
+        // Sidecar image paths can climb ("../render.png") from a build
+        // folder to the model root. A stored ".." segment would silently
+        // fail to load (the asset protocol refuses traversal segments)
+        // even though is_file() and the DB row both look healthy.
         let root = std::env::temp_dir().join(format!("stlpack_relimg_{}", std::process::id()));
         let sup = root.join("ashtok/Supported");
         fs::create_dir_all(&sup).unwrap();
@@ -1324,19 +1315,10 @@ mod tests {
 
     #[test]
     fn plinth_bases_export_layout_scans_as_six_separate_models() {
-        // Mirrors basecutter::commands::export_cuts's on-disk layout for a
-        // six-base Base Cutter "Add to catalog" export, one cut per folder:
-        // {root}/Plinth Bases/{YYYY-MM group}/{cut stem}/{cut stem}.stl
-        // with a minimal {name, designer: "Plinth Bases"} model.json per
-        // per-cut folder. Confirms the general rule this bug turned on: a
-        // sidecar'd folder is its own model — a name-suffix heuristic like
-        // "foo-1, foo-2, ..." never gets a chance to merge them, because
-        // metadata models skip folder inference (`inferred` stays None)
-        // entirely and take group_name straight from the sidecar's name.
-        // (The actual "one model, six parts" bug the user hit was a
-        // DIFFERENT bug one layer up, in export_cuts itself — see
-        // basecutter::commands::tests::
-        // distinct_bases_sharing_a_default_stem_scan_as_separate_models.)
+        // A sidecar'd folder is always its own model: metadata models skip
+        // folder inference entirely and take group_name straight from the
+        // sidecar's name, so name-suffixed folders ("foo-1", "foo-2", ...)
+        // never merge.
         let root =
             std::env::temp_dir().join(format!("stlpack_plinth_layout_{}", std::process::id()));
         let release_dir = root.join("Plinth Bases").join("2026-07 Sunday Batch");
