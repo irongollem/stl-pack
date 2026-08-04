@@ -875,6 +875,75 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_18_row_re_streams_once_and_backfills_its_base_facts() {
+        let dir = test_dir("pre18_backfill");
+        let path = dir.join("cube.stl");
+        fs::write(&path, cube_stl()).unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        let row = FileRow {
+            path: path.to_string_lossy().into_owned(),
+            dir_path: dir.to_string_lossy().into_owned(),
+            file_name: "cube.stl".into(),
+            extension: "stl".into(),
+            size_bytes: cube_stl().len() as i64,
+            modified_at: 100,
+            ..Default::default()
+        };
+        let model = ModelRow {
+            dir_path: dir.to_string_lossy().into_owned(),
+            name: "test".into(),
+            source: "heuristic".into(),
+            file_count: 1,
+            ..Default::default()
+        };
+        db::replace_catalog(&mut conn, &dir.to_string_lossy(), &[row], &[model], &[], &[], &[]).unwrap();
+
+        let cancel = AtomicBool::new(false);
+        let first = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(first.mined, 1);
+        let hash = db::known_hash(&conn, &path.to_string_lossy()).expect("hash stored");
+        assert!(db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
+
+        // Roll the row back to a pre-#18 state: mined, but never checked for
+        // a base — geometry_satisfies must now consider it incomplete.
+        conn.execute(
+            "UPDATE file_geometry SET base_checked = 0 WHERE content_hash = ?1",
+            [&hash],
+        )
+        .unwrap();
+        assert!(!db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
+
+        // The file is still on disk, so the next run re-streams it once
+        // (counted `mined`, not `already_known`) and backfills base_checked.
+        let second = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            second,
+            GeometryOutcome {
+                mined: 1,
+                already_known: 0,
+                failed: 0,
+            }
+        );
+        assert!(db::geometry_satisfies(&conn, &hash, EDGE_STATS_MAX_TRIS).unwrap());
+
+        // A further rerun is a true no-op re-read this time.
+        fs::remove_file(&path).unwrap();
+        let third = mine_geometry(&conn, &cancel, EDGE_STATS_MAX_TRIS, |_, _| {}).unwrap();
+        assert_eq!(
+            third,
+            GeometryOutcome {
+                mined: 0,
+                already_known: 1,
+                failed: 0,
+            }
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_complete_row_is_still_skipped_no_matter_how_large_the_cap() {
         let dir = test_dir("complete_row_any_cap");
         let path = dir.join("tri.stl");

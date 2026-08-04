@@ -1,8 +1,8 @@
 use crate::error::AppError;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::catalog::stl_facts::StlFacts;
-use crate::catalog::{DuplicateGroup, ModelFileGeometry};
+use crate::catalog::stl_facts::{BaseShape, StlFacts};
+use crate::catalog::{BaseSuggestion, DuplicateGroup, ModelFileGeometry};
 
 /// Sizes that occur more than once — the free prefilter for duplicate
 /// detection.
@@ -76,7 +76,8 @@ pub fn stl_geometry_candidates(
 
 /// False (re-mine) only for a row whose open_edges is NULL while its
 /// tri_count now fits under `edge_cap` — raising the cap backfills
-/// instead of skipping forever.
+/// instead of skipping forever. Also false for a pre-#18 row (base_checked
+/// still 0), so every such row re-streams once and backfills its base facts.
 pub fn geometry_satisfies(
     conn: &Connection,
     content_hash: &str,
@@ -85,7 +86,8 @@ pub fn geometry_satisfies(
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM file_geometry
-             WHERE content_hash = ?1 AND (open_edges IS NOT NULL OR tri_count > ?2)",
+             WHERE content_hash = ?1 AND (open_edges IS NOT NULL OR tri_count > ?2)
+               AND base_checked = 1",
             params![content_hash, edge_cap],
             |row| row.get(0),
         )
@@ -93,7 +95,16 @@ pub fn geometry_satisfies(
     Ok(count > 0)
 }
 
-/// Stores bbox extents (max − min per axis), not the raw min/max.
+fn base_shape_str(shape: BaseShape) -> &'static str {
+    match shape {
+        BaseShape::Round => "round",
+        BaseShape::Square => "square",
+    }
+}
+
+/// Stores bbox extents (max − min per axis), not the raw min/max. Always
+/// sets base_checked = 1, even when facts.base is None — that's what tells
+/// geometry_satisfies this row has already been through base detection.
 pub fn store_file_geometry(
     conn: &Connection,
     content_hash: &str,
@@ -103,15 +114,23 @@ pub fn store_file_geometry(
     let x_mm = (facts.max.0 - facts.min.0) as f64;
     let y_mm = (facts.max.1 - facts.min.1) as f64;
     let z_mm = (facts.max.2 - facts.min.2) as f64;
+    let (base_shape, base_mm) = match facts.base {
+        Some((shape, mm)) => (Some(base_shape_str(shape)), Some(mm)),
+        None => (None, None),
+    };
     conn.execute(
         "INSERT INTO file_geometry
-             (content_hash, tri_count, x_mm, y_mm, z_mm, volume_mm3, open_edges, derived_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             (content_hash, tri_count, x_mm, y_mm, z_mm, volume_mm3, open_edges,
+              base_shape, base_mm, base_checked, derived_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10)
          ON CONFLICT(content_hash) DO UPDATE SET
              tri_count = excluded.tri_count,
              x_mm = excluded.x_mm, y_mm = excluded.y_mm, z_mm = excluded.z_mm,
              volume_mm3 = excluded.volume_mm3,
              open_edges = excluded.open_edges,
+             base_shape = excluded.base_shape,
+             base_mm = excluded.base_mm,
+             base_checked = excluded.base_checked,
              derived_at = excluded.derived_at",
         params![
             content_hash,
@@ -121,11 +140,83 @@ pub fn store_file_geometry(
             z_mm,
             facts.volume_mm3,
             facts.open_edge_count,
+            base_shape,
+            base_mm,
             derived_at
         ],
     )
     .map_err(|e| AppError::ConfigError(format!("Failed to store geometry: {}", e)))?;
     Ok(())
+}
+
+/// A model-level base suggestion: every one of the dir's mined files that
+/// detected a base must agree (same shape, mm within ±1.0) — any
+/// disagreement, or zero detections, yields no suggestion. Suppressed (per
+/// curation precedence) when the matching effective curated field is
+/// already set, or the model dismissed suggestions — both checked here so
+/// the drawer only ever sees a suggestion worth showing.
+pub fn model_base_suggestion(
+    conn: &Connection,
+    dir_path: &str,
+) -> Result<Option<BaseSuggestion>, AppError> {
+    let map_err =
+        |e: rusqlite::Error| AppError::ConfigError(format!("Base suggestion query failed: {}", e));
+    let mut stmt = conn
+        .prepare(
+            "SELECT g.base_shape, g.base_mm
+             FROM files f JOIN file_geometry g ON g.content_hash = f.content_hash
+             WHERE f.dir_path = ?1 AND g.base_checked = 1 AND g.base_shape IS NOT NULL",
+        )
+        .map_err(map_err)?;
+    let detections: Vec<(String, f64)> = stmt
+        .query_map(params![dir_path], |row| Ok((row.get(0)?, row.get(1)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(map_err)?;
+
+    let Some((shape, first_mm)) = detections.first().cloned() else {
+        return Ok(None);
+    };
+    let mut min_mm = first_mm;
+    let mut max_mm = first_mm;
+    for (other_shape, mm) in &detections[1..] {
+        if *other_shape != shape {
+            return Ok(None);
+        }
+        min_mm = min_mm.min(*mm);
+        max_mm = max_mm.max(*mm);
+    }
+    if max_mm - min_mm > 1.0 {
+        return Ok(None);
+    }
+    let mm = (min_mm + max_mm) / 2.0;
+    let mm = (mm * 10.0).round() / 10.0;
+
+    let (curated_round, curated_square, dismissed): (Option<String>, Option<String>, i64) = conn
+        .query_row(
+            "SELECT NULLIF(COALESCE(u.base_round, m.base_round), ''),
+                    NULLIF(COALESCE(u.base_square, m.base_square), ''),
+                    COALESCE(u.base_suggestion_dismissed, 0)
+             FROM models m LEFT JOIN model_user_meta u ON u.dir_path = m.dir_path
+             WHERE m.dir_path = ?1",
+            [dir_path],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(map_err)?
+        .unwrap_or((None, None, 0));
+    if dismissed != 0 {
+        return Ok(None);
+    }
+    let already_curated = match shape.as_str() {
+        "round" => curated_round.is_some(),
+        "square" => curated_square.is_some(),
+        _ => false,
+    };
+    if already_curated {
+        return Ok(None);
+    }
+
+    Ok(Some(BaseSuggestion { shape, mm }))
 }
 
 /// Inner join on content_hash: un-mined files simply don't appear.
@@ -239,4 +330,95 @@ pub fn duplicate_groups(conn: &Connection) -> Result<Vec<DuplicateGroup>, AppErr
         .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
         .map_err(map_err)?;
     Ok(groups)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::db::test_util::*;
+    use crate::catalog::db::*;
+    use crate::catalog::FileRow;
+
+    fn stl_facts_with_base(base: Option<(BaseShape, f64)>) -> StlFacts {
+        StlFacts {
+            tri_count: 12,
+            min: (0.0, 0.0, 0.0),
+            max: (10.0, 10.0, 10.0),
+            volume_mm3: 1000.0,
+            open_edge_count: Some(0),
+            base,
+        }
+    }
+
+    #[test]
+    fn model_base_suggestion_requires_agreement() {
+        let mut conn = test_conn();
+        let files = vec![
+            FileRow {
+                content_hash: Some("hash-a".into()),
+                ..file_row("/lib/newt/a.stl", "/lib/newt", 1024)
+            },
+            FileRow {
+                content_hash: Some("hash-b".into()),
+                ..file_row("/lib/newt/b.stl", "/lib/newt", 1024)
+            },
+        ];
+        let model = model_row("/lib/newt", "Giant Newt");
+        replace_catalog(&mut conn, "/lib", &files, &[model], &[], &[], &[]).unwrap();
+
+        // Agreeing round bases within the ±1mm window suggest their average.
+        store_file_geometry(&conn, "hash-a", &stl_facts_with_base(Some((BaseShape::Round, 32.0))), 100).unwrap();
+        store_file_geometry(&conn, "hash-b", &stl_facts_with_base(Some((BaseShape::Round, 32.4))), 100).unwrap();
+        let suggestion = model_base_suggestion(&conn, "/lib/newt")
+            .unwrap()
+            .expect("agreeing files should suggest");
+        assert_eq!(suggestion.shape, "round");
+        assert!((suggestion.mm - 32.2).abs() < 0.01, "got {}", suggestion.mm);
+
+        // A disagreeing shape yields no suggestion at all.
+        store_file_geometry(&conn, "hash-b", &stl_facts_with_base(Some((BaseShape::Square, 32.0))), 100).unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_none());
+
+        // Same shape, but mm too far apart (> 1.0mm) also disagrees.
+        store_file_geometry(&conn, "hash-b", &stl_facts_with_base(Some((BaseShape::Round, 34.0))), 100).unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_none());
+
+        // Zero detections (neither file found a base) suggests nothing.
+        store_file_geometry(&conn, "hash-a", &stl_facts_with_base(None), 100).unwrap();
+        store_file_geometry(&conn, "hash-b", &stl_facts_with_base(None), 100).unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_none());
+    }
+
+    #[test]
+    fn model_base_suggestion_respects_curation_precedence_and_dismissal() {
+        let mut conn = test_conn();
+        let files = vec![FileRow {
+            content_hash: Some("hash-a".into()),
+            ..file_row("/lib/newt/a.stl", "/lib/newt", 1024)
+        }];
+        let model = model_row("/lib/newt", "Giant Newt");
+        replace_catalog(&mut conn, "/lib", &files, &[model], &[], &[], &[]).unwrap();
+        store_file_geometry(&conn, "hash-a", &stl_facts_with_base(Some((BaseShape::Round, 32.0))), 100).unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_some());
+
+        // Already curated for the DETECTED shape: no suggestion, even
+        // though the mined facts still agree with themselves.
+        update_model_user_meta(
+            &conn, "/lib/newt", None, None, None, None, None, None, None, None, None,
+            Some("32".into()), None,
+        )
+        .unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_none());
+
+        // Clearing the curated field brings the suggestion back...
+        update_model_user_meta(
+            &conn, "/lib/newt", None, None, None, None, None, None, None, None, None, None, None,
+        )
+        .unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_some());
+
+        // ...but a dismissal suppresses it regardless of curation.
+        dismiss_base_suggestion(&conn, "/lib/newt").unwrap();
+        assert!(model_base_suggestion(&conn, "/lib/newt").unwrap().is_none());
+    }
 }

@@ -165,6 +165,29 @@
             class="flex-1 min-w-0"
           />
         </div>
+        <div
+          class="font-mono text-[10px] tracking-wide text-base-content/40 uppercase px-1"
+          title="Matches the curated base size — mined suggestions don't count until applied"
+        >
+          Base (curated)
+        </div>
+        <div class="flex items-center gap-1.5 px-1 mb-1.5">
+          <select
+            v-model="baseShapeFilter"
+            class="select select-xs w-20 shrink-0 font-mono"
+          >
+            <option value="any">any</option>
+            <option value="round">round</option>
+            <option value="square">square</option>
+          </select>
+          <NumberInput
+            id="geo-base-mm"
+            v-model="baseMmFilter"
+            placeholder="mm"
+            :min="0"
+            class="flex-1 min-w-0"
+          />
+        </div>
         <button
           v-if="hasGeometryFilter"
           type="button"
@@ -418,6 +441,8 @@ const {
   heightMaxMm,
   volumeMinMm3,
   volumeMaxMm3,
+  baseShapeFilter,
+  baseMmFilter,
   hasGeometryFilter,
   roots,
   isScanning,

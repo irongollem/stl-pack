@@ -1278,7 +1278,7 @@ mod tests {
         ];
         replace_catalog(&mut conn, "/lib", &[], &models, &[], &[], &[]).unwrap();
 
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1, "four variants, one card");
         let group = &page.groups[0];
         assert_eq!(group.group_name, "galeb duhr");
@@ -1290,7 +1290,7 @@ mod tests {
         assert_eq!(supports, vec!["supported", "unsupported"]);
 
         // FTS still finds the group through any variant's name
-        let page = search_groups(&conn, "galeb", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "galeb", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
 
         // The displayed logical title is independently searchable. Variant
@@ -1299,13 +1299,13 @@ mod tests {
             .unwrap();
         rebuild_fts(&conn).unwrap();
         assert_eq!(
-            search_groups(&conn, "gal", &[], None, None, None, None, None, "name", 10, 0, true)
+            search_groups(&conn, "gal", &[], None, None, None, None, None, "name", 10, 0, true, None, None)
                 .unwrap()
                 .total,
             1
         );
         assert_eq!(
-            search_groups(&conn, "GALEB", &[], None, None, None, None, None, "name", 10, 0, true)
+            search_groups(&conn, "GALEB", &[], None, None, None, None, None, "name", 10, 0, true, None, None)
                 .unwrap()
                 .total,
             1
@@ -1336,13 +1336,13 @@ mod tests {
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
 
         rename_group(&conn, "Giant Newt", "Stone Guardian").unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert!(page.groups.iter().any(|g| g.group_name == "Stone Guardian"));
         assert!(!page.groups.iter().any(|g| g.group_name == "Giant Newt"));
 
         // findable by the new name, both in FTS and member lookup
         assert_eq!(
-            search_groups(&conn, "guardian", &[], None, None, None, None, None, "name", 10, 0, true).unwrap().total,
+            search_groups(&conn, "guardian", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap().total,
             1
         );
         assert_eq!(group_members(&conn, "stone guardian", true).unwrap().len(), 1);
@@ -1350,19 +1350,19 @@ mod tests {
         // a rescan keeps the rename (keyed on the scanner's group name)
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
         assert_eq!(
-            search_groups(&conn, "guardian", &[], None, None, None, None, None, "name", 10, 0, true).unwrap().total,
+            search_groups(&conn, "guardian", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap().total,
             1
         );
 
         // renaming another group to the same display name merges them
         rename_group(&conn, "Bugbear", "Stone Guardian").unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1, "two groups now share one card");
         assert_eq!(group_members(&conn, "Stone Guardian", true).unwrap().len(), 2);
 
         // empty name reverts every override displaying that name
         rename_group(&conn, "Stone Guardian", "").unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 2);
         assert!(page.groups.iter().any(|g| g.group_name == "Giant Newt"));
 
@@ -1414,13 +1414,13 @@ mod tests {
         )
         .unwrap();
 
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.groups[0].group_name, "Dungeon Denizens");
         assert_eq!(group_members(&conn, "Dungeon Denizens", true).unwrap().len(), 2);
         // findable by the combined name
         assert_eq!(
-            search_groups(&conn, "denizens", &[], None, None, None, None, None, "name", 10, 0, true).unwrap().total,
+            search_groups(&conn, "denizens", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap().total,
             1
         );
 
@@ -1452,7 +1452,7 @@ mod tests {
 
         // Splitting = clearing the renames: the sources come back as cards
         rename_group(&conn, "Dungeon Denizens", "").unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         let names: Vec<_> = page.groups.iter().map(|g| g.group_name.clone()).collect();
         assert!(names.contains(&"Giant Newt".to_string()));
         assert!(names.contains(&"Bugbear".to_string()));
@@ -1474,7 +1474,7 @@ mod tests {
 
         // Pull one back out: it's its own card again, the other stays put
         detach_group_source(&conn, "Dungeon Denizens", "Bugbear").unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         let names: Vec<_> = page.groups.iter().map(|g| g.group_name.clone()).collect();
         assert!(names.contains(&"Bugbear".to_string()));
         assert!(names.contains(&"Dungeon Denizens".to_string()));
@@ -1498,7 +1498,7 @@ mod tests {
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
 
         set_group_cover(&conn, "critters", &picked_dir, None).unwrap();
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(
             page.groups[0].preview_path.as_deref(),
             Some("/previews/newt.png"),

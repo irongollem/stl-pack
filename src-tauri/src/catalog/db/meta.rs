@@ -167,6 +167,21 @@ pub fn update_model_user_meta(
     Ok(())
 }
 
+/// Permanently suppress a model's base-size suggestion (see
+/// db::model_base_suggestion) — set-once, like the nsfw flag; there's no
+/// "undismiss" since a fresh suggestion only reappears once curation or the
+/// mined facts actually change.
+pub fn dismiss_base_suggestion(conn: &Connection, dir_path: &str) -> Result<(), AppError> {
+    require_model(conn, dir_path)?;
+    conn.execute(
+        "INSERT INTO model_user_meta (dir_path, base_suggestion_dismissed) VALUES (?1, 1)
+         ON CONFLICT(dir_path) DO UPDATE SET base_suggestion_dismissed = 1",
+        params![dir_path],
+    )
+    .map_err(|e| AppError::ConfigError(format!("Failed to dismiss base suggestion: {}", e)))?;
+    Ok(())
+}
+
 /// Point a model at a user-chosen or rendered preview image. Stored in
 /// model_user_meta so it survives rescans and beats the scanner's pick.
 pub fn set_model_preview(
@@ -311,11 +326,11 @@ mod tests {
         // Explicit per-model flag: Giant Newt is 18+, nobody else is yet
         set_models_nsfw(&conn, &["/lib/newt".to_string()], Some(true)).unwrap();
 
-        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false).unwrap();
+        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false, None, None).unwrap();
         assert_eq!(hidden.total, 2, "newt hidden; bugbear and owlbear still show");
         assert!(!hidden.groups.iter().any(|g| g.group_name == "Giant Newt"));
 
-        let shown = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let shown = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(shown.total, 3);
         let newt_group = shown.groups.iter().find(|g| g.group_name == "Giant Newt").unwrap();
         assert!(newt_group.nsfw, "any effectively-flagged member marks the card");
@@ -329,7 +344,7 @@ mod tests {
         set_designer_nsfw(&conn, "DTL", true).unwrap();
         assert_eq!(list_nsfw_designers(&conn).unwrap(), vec!["DTL".to_string()]);
 
-        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false).unwrap();
+        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false, None, None).unwrap();
         assert_eq!(hidden.total, 1, "owlbear now hidden too, via the designer rule");
         assert!(group_members(&conn, "Owlbear", false).unwrap().is_empty());
         assert!(group_members(&conn, "Owlbear", true).unwrap()[0].nsfw);
@@ -349,7 +364,7 @@ mod tests {
         // Explicit "not 18+" on Owlbear overrides the designer-wide rule —
         // it's read first in the COALESCE chain (NSFW_EFFECTIVE_SQL)
         set_models_nsfw(&conn, &["/lib/owlbear".to_string()], Some(false)).unwrap();
-        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false).unwrap();
+        let hidden = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, false, None, None).unwrap();
         assert_eq!(hidden.total, 2, "owlbear opted out is visible again; newt stays hidden");
         let owlbear_members = group_members(&conn, "Owlbear", false).unwrap();
         assert_eq!(owlbear_members.len(), 1);
@@ -391,7 +406,7 @@ mod tests {
 
         // the whole point of model_user_meta: a full rescan keeps user edits
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
-        let page = search(&conn, "repose", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "repose", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1, "custom name is searchable after rescan");
         let entry = &page.entries[0];
         assert_eq!(entry.name, "Newt, Giant (repose)");
@@ -404,20 +419,20 @@ mod tests {
         assert_eq!(entry.release_name.as_deref(), Some("Order of the Unicorn"));
         assert_eq!(entry.variant.as_deref(), Some("mounted"));
         assert_eq!(
-            search(&conn, "mounted", &[], None, None, None, None, 10, 0, true).unwrap().total,
+            search(&conn, "mounted", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total,
             1,
             "variant is searchable"
         );
         // fuzzy/trigram search: possessive apostrophe is folded out, so the
         // designer matches when typed as "trappers"; and a mid-word chunk of
         // sculptor matches by substring — neither worked with prefix-only FTS
-        assert_eq!(search(&conn, "trappers", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
-        assert_eq!(search(&conn, "ulpto", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "trappers", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
+        assert_eq!(search(&conn, "ulpto", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
         // the release name is searchable too
-        assert_eq!(search(&conn, "unicorn", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "unicorn", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
         // a multi-field query still ANDs: designer word + the model name
         assert_eq!(
-            search(&conn, "trappers repose", &[], None, None, None, None, 10, 0, true).unwrap().total,
+            search(&conn, "trappers repose", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total,
             1
         );
         assert_eq!(
@@ -445,7 +460,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.entries[0].name, "Giant Newt");
         assert!(
             page.entries[0].designer.is_none(),
@@ -480,7 +495,7 @@ mod tests {
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
 
         // untouched, the scanner value shows through
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.entries[0].pose.as_deref(), Some("Attacking"));
 
         // the user blanks the pose (the full-form save sends None for
@@ -501,7 +516,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert!(
             page.entries[0].pose.is_none(),
             "cleared pose must not resurrect"
@@ -510,7 +525,7 @@ mod tests {
 
         // ...and the clear survives a rescan repopulating models.pose
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert!(
             page.entries[0].pose.is_none(),
             "rescan must not resurrect the cleared pose"
@@ -533,7 +548,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.entries[0].pose.as_deref(), Some("B"));
     }
 
@@ -556,7 +571,7 @@ mod tests {
         set_designer_nsfw(&conn, "DTL", true).unwrap();
         assert_eq!(rename_designer(&mut conn, "dtl", "Dragon Trappers Lodge").unwrap(), 2);
         assert_eq!(list_nsfw_designers(&conn).unwrap(), vec!["Dragon Trappers Lodge"]);
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         assert_eq!(
             page.groups
                 .iter()
@@ -575,7 +590,7 @@ mod tests {
             .unwrap(),
             2
         );
-        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true).unwrap();
+        let page = search_groups(&conn, "", &[], None, None, None, None, None, "name", 10, 0, true, None, None).unwrap();
         for group in &page.groups {
             if group.designer.as_deref() == Some("Dragon Trappers Lodge") {
                 assert_eq!(group.release_name.as_deref(), Some("Critter Folk"));
@@ -602,6 +617,8 @@ mod tests {
                 10,
                 0,
                 true,
+                None,
+                None,
             )
             .unwrap()
             .total,

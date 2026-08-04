@@ -14,6 +14,140 @@ pub struct StlFacts {
     pub volume_mm3: f64,
     /// Edges not shared by exactly two triangles; None above the edge cap.
     pub open_edge_count: Option<u32>,
+    /// A round/square base detected at the mesh's flat bottom; None when
+    /// ambiguous (oval, rect, no flat bottom, or the candidate-triangle cap
+    /// overflowed) — see FactsAccumulator's BaseAccumulator.
+    pub base: Option<(BaseShape, f64)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseShape {
+    Round,
+    Square,
+}
+
+// A base's bottom face is coplanar at the mesh's min z; this is the
+// tolerance for "coplanar" (both a triangle's own z-extent, and how far a
+// triangle's low point may sit above the running floor).
+const BASE_Z_EPS_MM: f32 = 0.3;
+// A real base bottom is a few thousand triangles; past this many candidates
+// the region isn't a normal base, so base detection gives up for the file
+// entirely rather than risk a wrong answer from a partial view — permanent
+// for the rest of the stream, unlike the running-floor eviction below.
+const BASE_TRI_CAP: u32 = 50_000;
+const BASE_MIN_DIM_MM: f64 = 15.0;
+const BASE_MAX_DIM_MM: f64 = 170.0;
+const BASE_ROUND_FILL_MIN: f64 = 0.72;
+const BASE_ROUND_FILL_MAX: f64 = 0.85;
+const BASE_SQUARE_FILL_MIN: f64 = 0.93;
+
+/// Tracks only the O(1) aggregates finish() needs (count, projected xy
+/// bbox, summed shoelace area) — never a raw triangle list — so the cap
+/// below is a plausibility gate, not a memory-safety one. Candidates are
+/// re-anchored around the running bbox floor (self.min[2] in
+/// FactsAccumulator) as it drops during the stream; a drop of more than
+/// BASE_Z_EPS_MM evicts whatever was buffered against the old floor.
+struct BaseAccumulator {
+    floor_z: f32,
+    tri_count: u32,
+    overflowed: bool,
+    min_xy: [f32; 2],
+    max_xy: [f32; 2],
+    area_sum: f64,
+}
+
+impl BaseAccumulator {
+    fn new() -> Self {
+        Self {
+            floor_z: f32::INFINITY,
+            tri_count: 0,
+            overflowed: false,
+            min_xy: [f32::INFINITY; 2],
+            max_xy: [f32::NEG_INFINITY; 2],
+            area_sum: 0.0,
+        }
+    }
+
+    /// `running_floor` is the bbox's global min z as of AFTER this
+    /// triangle's own vertices were folded in, so it's always <= the
+    /// triangle's own min z — exactly what "the running min_z" means.
+    fn push(&mut self, verts: &[[f32; 3]; 3], running_floor: f32) {
+        if self.overflowed {
+            return;
+        }
+        let z = [verts[0][2], verts[1][2], verts[2][2]];
+        let tri_min_z = z[0].min(z[1]).min(z[2]);
+        let tri_max_z = z[0].max(z[1]).max(z[2]);
+        if tri_max_z - tri_min_z > BASE_Z_EPS_MM {
+            return; // not flat enough to be a base's bottom face
+        }
+        if self.tri_count == 0 || running_floor < self.floor_z - BASE_Z_EPS_MM {
+            // No anchor yet, or the true floor dropped past tolerance —
+            // whatever's buffered was near the OLD floor, so it's evicted.
+            self.floor_z = running_floor;
+            self.tri_count = 0;
+            self.min_xy = [f32::INFINITY; 2];
+            self.max_xy = [f32::NEG_INFINITY; 2];
+            self.area_sum = 0.0;
+        }
+        if tri_min_z - self.floor_z > BASE_Z_EPS_MM {
+            return; // a flat triangle, but a shelf well above the floor
+        }
+        if self.tri_count >= BASE_TRI_CAP {
+            self.overflowed = true;
+            return;
+        }
+        self.tri_count += 1;
+        for v in verts {
+            if v[0] < self.min_xy[0] {
+                self.min_xy[0] = v[0];
+            }
+            if v[0] > self.max_xy[0] {
+                self.max_xy[0] = v[0];
+            }
+            if v[1] < self.min_xy[1] {
+                self.min_xy[1] = v[1];
+            }
+            if v[1] > self.max_xy[1] {
+                self.max_xy[1] = v[1];
+            }
+        }
+        let (x0, y0) = (f64::from(verts[0][0]), f64::from(verts[0][1]));
+        let (x1, y1) = (f64::from(verts[1][0]), f64::from(verts[1][1]));
+        let (x2, y2) = (f64::from(verts[2][0]), f64::from(verts[2][1]));
+        self.area_sum += 0.5 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1)).abs();
+    }
+
+    fn finish(self, global_min_z: f32) -> Option<(BaseShape, f64)> {
+        if self.overflowed || self.tri_count == 0 {
+            return None;
+        }
+        // Eviction is lazy (it runs on the next flat candidate), so if the
+        // true floor dropped after the last one arrived, the buffered disc
+        // is a shelf above the bottom — not a base.
+        if self.floor_z - global_min_z > BASE_Z_EPS_MM {
+            return None;
+        }
+        let w = f64::from(self.max_xy[0] - self.min_xy[0]);
+        let d = f64::from(self.max_xy[1] - self.min_xy[1]);
+        if !(BASE_MIN_DIM_MM..=BASE_MAX_DIM_MM).contains(&w)
+            || !(BASE_MIN_DIM_MM..=BASE_MAX_DIM_MM).contains(&d)
+        {
+            return None;
+        }
+        let tol = (w - d).abs();
+        if tol > 1.0_f64.max(0.02 * w) {
+            return None;
+        }
+        let fill = self.area_sum / (w * d);
+        if (BASE_ROUND_FILL_MIN..=BASE_ROUND_FILL_MAX).contains(&fill) {
+            Some((BaseShape::Round, (w + d) / 2.0))
+        } else if fill >= BASE_SQUARE_FILL_MIN {
+            Some((BaseShape::Square, w))
+        } else {
+            None
+        }
+    }
 }
 
 // The floor every runtime edge cap clamps to: no setting may regress
@@ -54,6 +188,7 @@ pub struct FactsAccumulator {
     // per-edge allocation at all, not even an empty map, so the skip
     // actually bounds memory.
     edge_counts: Option<HashMap<EdgeKey, u32>>,
+    base: BaseAccumulator,
 }
 
 impl FactsAccumulator {
@@ -67,6 +202,7 @@ impl FactsAccumulator {
             max: [f32::NEG_INFINITY; 3],
             volume_acc: 0.0,
             edge_counts: (tri_count_hint <= edge_cap).then(HashMap::new),
+            base: BaseAccumulator::new(),
         }
     }
 
@@ -96,6 +232,8 @@ impl FactsAccumulator {
             *key = (raw[0], raw[1], raw[2]);
         }
 
+        self.base.push(&verts_f32, self.min[2]);
+
         let v0 = verts_f32[0].map(f64::from);
         let v1 = verts_f32[1].map(f64::from);
         let v2 = verts_f32[2].map(f64::from);
@@ -124,12 +262,14 @@ impl FactsAccumulator {
         let open_edge_count = self
             .edge_counts
             .map(|counts| counts.values().filter(|&&count| count != 2).count() as u32);
+        let base = self.base.finish(self.min[2]);
         StlFacts {
             tri_count: self.pushed,
             min: (self.min[0], self.min[1], self.min[2]),
             max: (self.max[0], self.max[1], self.max[2]),
             volume_mm3: self.volume_acc.abs(),
             open_edge_count,
+            base,
         }
     }
 }
@@ -652,5 +792,174 @@ mod tests {
         assert!(!is_ascii_stl_preamble(b"solidify\n")); // no delimiter after "solid"
         assert!(!is_ascii_stl_preamble(b" solid test\n")); // leading whitespace not allowed
         assert!(!is_ascii_stl_preamble(b"solid \0\x01binary garbage"));
+    }
+
+    /// Fan-triangulated disc at a fixed z — the flat bottom face of a round
+    /// base, and (at a different z) its lid.
+    fn disc_triangles(radius: f32, segments: u32, z: f32) -> Vec<[(f32, f32, f32); 3]> {
+        let center = (0.0f32, 0.0f32, z);
+        (0..segments)
+            .map(|i| {
+                let a0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+                let a1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+                let p0 = (radius * a0.cos(), radius * a0.sin(), z);
+                let p1 = (radius * a1.cos(), radius * a1.sin(), z);
+                [center, p0, p1]
+            })
+            .collect()
+    }
+
+    /// A cylindrical wall between two z levels — every triangle spans the
+    /// full z0..z1 extent, so none of these ever qualify as base candidates.
+    fn cylinder_wall_triangles(radius: f32, segments: u32, z0: f32, z1: f32) -> Vec<[(f32, f32, f32); 3]> {
+        (0..segments)
+            .flat_map(|i| {
+                let a0 = 2.0 * std::f32::consts::PI * i as f32 / segments as f32;
+                let a1 = 2.0 * std::f32::consts::PI * (i + 1) as f32 / segments as f32;
+                let p0_lo = (radius * a0.cos(), radius * a0.sin(), z0);
+                let p1_lo = (radius * a1.cos(), radius * a1.sin(), z0);
+                let p0_hi = (radius * a0.cos(), radius * a0.sin(), z1);
+                let p1_hi = (radius * a1.cos(), radius * a1.sin(), z1);
+                [[p0_lo, p1_lo, p1_hi], [p0_lo, p1_hi, p0_hi]]
+            })
+            .collect()
+    }
+
+    /// A square wall (4 sides) between two z levels — the square-base
+    /// twin of cylinder_wall_triangles.
+    fn square_wall_triangles(half: f32, z0: f32, z1: f32) -> Vec<[(f32, f32, f32); 3]> {
+        let lo = [
+            (-half, -half, z0),
+            (half, -half, z0),
+            (half, half, z0),
+            (-half, half, z0),
+        ];
+        let hi = [
+            (-half, -half, z1),
+            (half, -half, z1),
+            (half, half, z1),
+            (-half, half, z1),
+        ];
+        (0..4)
+            .flat_map(|i| {
+                let j = (i + 1) % 4;
+                [[lo[i], lo[j], hi[j]], [lo[i], hi[j], hi[i]]]
+            })
+            .collect()
+    }
+
+    /// A small closed cube standing in for "the rest of the mini" above a
+    /// base — its own bottom face sits well above the running floor, so
+    /// base detection must ignore it as a shelf, not a second base.
+    fn blob_triangles(z0: f32, z1: f32, half: f32) -> Vec<[(f32, f32, f32); 3]> {
+        let a = (-half, -half, z0);
+        let b = (half, -half, z0);
+        let c = (half, half, z0);
+        let d = (-half, half, z0);
+        let e = (-half, -half, z1);
+        let f = (half, -half, z1);
+        let g = (half, half, z1);
+        let h = (-half, half, z1);
+        vec![
+            [a, c, b],
+            [a, d, c],
+            [e, f, g],
+            [e, g, h],
+            [a, b, f],
+            [a, f, e],
+            [d, g, c],
+            [d, h, g],
+            [a, h, d],
+            [a, e, h],
+            [b, c, g],
+            [b, g, f],
+        ]
+    }
+
+    #[test]
+    fn round_base_disc_is_detected_with_diameter_within_tolerance() {
+        let radius = 16.0; // a 32mm-diameter base
+        let segments = 64;
+        let wall_h = 2.0;
+        let mut triangles = disc_triangles(radius, segments, 0.0);
+        triangles.extend(cylinder_wall_triangles(radius, segments, 0.0, wall_h));
+        triangles.extend(blob_triangles(wall_h, wall_h + 5.0, 4.0));
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed round-base STL");
+        let (shape, mm) = facts.base.expect("a round base should be detected");
+        assert_eq!(shape, BaseShape::Round);
+        assert!((mm - 32.0).abs() < 0.5, "got {mm}");
+    }
+
+    #[test]
+    fn square_base_plate_is_detected_with_side_within_tolerance() {
+        let side = 25.0;
+        let half = side / 2.0;
+        let a = (-half, -half, 0.0);
+        let b = (half, -half, 0.0);
+        let c = (half, half, 0.0);
+        let d = (-half, half, 0.0);
+        let mut triangles = vec![[a, c, b], [a, d, c]]; // the flat plate itself
+        triangles.extend(square_wall_triangles(half, 0.0, 2.0));
+        triangles.extend(blob_triangles(2.0, 7.0, 4.0));
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed square-base STL");
+        let (shape, mm) = facts.base.expect("a square base should be detected");
+        assert_eq!(shape, BaseShape::Square);
+        assert!((mm - f64::from(side)).abs() < 0.5, "got {mm}");
+    }
+
+    #[test]
+    fn a_mesh_with_no_flat_bottom_detects_no_base() {
+        // An octahedron: the single lowest vertex is shared by four
+        // triangles that each span the full apex-to-equator height, so none
+        // of them is ever flat enough to be a base candidate.
+        let apex_bottom = (0.0, 0.0, -8.0);
+        let apex_top = (0.0, 0.0, 8.0);
+        let r = 20.0;
+        let equator = [(r, 0.0, 0.0), (0.0, r, 0.0), (-r, 0.0, 0.0), (0.0, -r, 0.0)];
+        let mut triangles = Vec::new();
+        for i in 0..4 {
+            let j = (i + 1) % 4;
+            triangles.push([apex_bottom, equator[i], equator[j]]);
+            triangles.push([apex_top, equator[j], equator[i]]);
+        }
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed octahedron STL");
+        assert!(facts.base.is_none(), "got {:?}", facts.base);
+    }
+
+    #[test]
+    fn a_flat_disc_above_the_true_bottom_is_not_a_base() {
+        // A perfect 32mm disc at z=2 — then the stream ends with a spike
+        // down to z=0 and no flat triangle after it, so lazy eviction never
+        // fires. finish() must reject the stale anchor, not report a base
+        // hovering above the mesh's real bottom.
+        let mut triangles = disc_triangles(16.0, 64, 2.0);
+        triangles.push([(0.0, 0.0, 2.0), (1.0, 0.0, 2.0), (0.0, 0.0, 0.0)]);
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed shelf STL");
+        assert!(facts.base.is_none(), "got {:?}", facts.base);
+    }
+
+    #[test]
+    fn base_candidate_overflow_reports_no_base() {
+        // More flat, floor-level candidates than BASE_TRI_CAP tolerates —
+        // detection must give up rather than answer from a partial view.
+        let count = BASE_TRI_CAP + 10;
+        let triangles: Vec<[(f32, f32, f32); 3]> = (0..count)
+            .map(|i| {
+                let x = i as f32 * 0.01;
+                [(x, 0.0, 0.0), (x + 0.005, 0.005, 0.0), (x, 0.005, 0.0)]
+            })
+            .collect();
+
+        let bytes = build_binary_stl(&triangles);
+        let facts = parse_binary_stl_facts(&bytes).expect("well-formed dense-floor STL");
+        assert!(facts.base.is_none(), "got {:?}", facts.base);
     }
 }

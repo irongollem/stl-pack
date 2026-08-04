@@ -553,25 +553,25 @@ mod tests {
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
 
         // prefix match on name
-        let page = search(&conn, "new", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "new", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(page.entries[0].name, "Giant Newt");
         assert_eq!(page.entries[0].tags, vec!["amphibian"]);
 
         // tag search through FTS
-        let page = search(&conn, "amphib", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "amphib", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
 
         // empty query lists everything
-        let page = search(&conn, "", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 2);
 
         // tag filter
-        let page = search(&conn, "", &["amphibian".to_string()], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "", &["amphibian".to_string()], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
 
         // no match
-        let page = search(&conn, "dragon", &[], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "dragon", &[], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 0);
     }
 
@@ -584,13 +584,13 @@ mod tests {
         // Soft remove the newt: rows go, marker stays
         add_scan_ignores(&conn, &["/lib/newt".to_string()]).unwrap();
         remove_models(&mut conn, &["/lib/newt".to_string()]).unwrap();
-        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
 
         // The rescan walks the SAME disk state (newt still exists on disk) —
         // the whole point: it must not resurrect what the user removed
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
-        assert_eq!(search(&conn, "bugbear", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
+        assert_eq!(search(&conn, "bugbear", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
         let file_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))
             .unwrap();
@@ -599,7 +599,7 @@ mod tests {
         // Unignore + rescan brings it back
         remove_scan_ignores_under(&conn, &["/lib/newt".to_string()]).unwrap();
         replace_catalog(&mut conn, "/lib", &files, &models, &tags, &[], &[]).unwrap();
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
     }
 
     #[test]
@@ -610,14 +610,14 @@ mod tests {
 
         add_tag(&conn, "/lib/newt", "painted").unwrap();
         // searchable immediately
-        assert_eq!(search(&conn, "painted", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "painted", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
 
         // rescan with metadata tags gone: user tag survives, metadata tag drops
         replace_catalog(&mut conn, "/lib", &files, &models, &[], &[], &[]).unwrap();
-        let page = search(&conn, "", &["painted".to_string()], None, None, None, None, 10, 0, true).unwrap();
+        let page = search(&conn, "", &["painted".to_string()], None, None, None, None, 10, 0, true, None, None).unwrap();
         assert_eq!(page.total, 1);
         assert_eq!(
-            search(&conn, "", &["amphibian".to_string()], None, None, None, None, 10, 0, true)
+            search(&conn, "", &["amphibian".to_string()], None, None, None, None, 10, 0, true, None, None)
                 .unwrap()
                 .total,
             0
@@ -660,14 +660,14 @@ mod tests {
         replace_catalog(&mut conn, "/other", &other_files, &other_models, &[], &[], &[]).unwrap();
 
         // both roots coexist in one index
-        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true).unwrap().total, 3);
-        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 3);
+        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
 
         // a root whose scan comes back empty disappears — its sibling doesn't
         replace_catalog(&mut conn, "/other", &[], &[], &[], &[], &[]).unwrap();
-        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
     }
 
     #[test]
@@ -695,7 +695,7 @@ mod tests {
         // metadata tag and the user tag both ride out the sibling scan
         replace_catalog(&mut conn, "/lib", &files, &models, &[], &[], &[]).unwrap();
         let by_tag = |tag: &str| {
-            search(&conn, "", &[tag.to_string()], None, None, None, None, 10, 0, true)
+            search(&conn, "", &[tag.to_string()], None, None, None, None, 10, 0, true, None, None)
                 .map(|page| page.total)
                 .unwrap()
         };
@@ -730,8 +730,8 @@ mod tests {
             .collect();
         replace_catalog(&mut conn, "/lib", &bug_files, &bug_models, &[], &[], &[]).unwrap();
 
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
-        assert_eq!(search(&conn, "ghoul", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
+        assert_eq!(search(&conn, "ghoul", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
         let ghoul_root: Option<String> = conn
             .query_row(
                 "SELECT root FROM models WHERE dir_path = '/library/ghoul'",
@@ -761,8 +761,8 @@ mod tests {
             .cloned()
             .collect();
         replace_catalog(&mut conn, "/lib/", &bug_files, &bug_models, &[], &[], &[]).unwrap();
-        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
+        assert_eq!(search(&conn, "", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
     }
 
     #[test]
@@ -778,8 +778,8 @@ mod tests {
 
         purge_root(&mut conn, "/lib").unwrap();
 
-        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true).unwrap().total, 0);
-        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true).unwrap().total, 1);
+        assert_eq!(search(&conn, "newt", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 0);
+        assert_eq!(search(&conn, "wyvern", &[], None, None, None, None, 10, 0, true, None, None).unwrap().total, 1);
         let orphaned_tags: u32 = conn
             .query_row(
                 "SELECT COUNT(*) FROM model_tags WHERE dir_path = '/lib/newt'",

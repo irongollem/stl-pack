@@ -218,6 +218,11 @@ pub struct GeometryRange {
     pub height_max_mm: Option<f64>,
     pub volume_min_mm3: Option<f64>,
     pub volume_max_mm3: Option<f64>,
+    /// "round" | "square"; anything else (including unset) matches either
+    /// when `base_mm` is set. Filters on CURATED base only — see
+    /// db::search's push_base_where/push_base_having.
+    pub base_shape: Option<String>,
+    pub base_mm: Option<f64>,
 }
 
 /// One configured catalog folder and its indexed footprint — a row in the
@@ -393,6 +398,25 @@ pub struct ModelFileGeometry {
     pub z_mm: f64,
     pub volume_mm3: f64,
     pub open_edges: Option<u32>,
+}
+
+/// A base-size suggestion derived from mined geometry: every mined file in
+/// the model that detected a base agreed on shape and mm (see
+/// db::model_base_suggestion). "round" | "square"; mm rounded to 1 decimal.
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct BaseSuggestion {
+    pub shape: String,
+    pub mm: f64,
+}
+
+/// What the drawer's geometry section needs in one round trip: the per-file
+/// listing plus any model-level base suggestion (None when files disagree,
+/// nothing detected, the model is already curated, or the suggestion was
+/// dismissed).
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct ModelGeometryDetail {
+    pub files: Vec<ModelFileGeometry>,
+    pub base_suggestion: Option<BaseSuggestion>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
