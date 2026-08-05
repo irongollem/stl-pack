@@ -20,7 +20,25 @@
             · v{{ inspection.version }}</template
           >
         </span>
+        <span
+          v-if="inspection.signature.status === 'valid'"
+          class="flex items-center gap-1.5 text-[10.5px] text-success/80"
+        >
+          ✓ Verified signature ·
+          <span class="font-mono text-base-content/40">{{
+            formatFingerprint(inspection.signature.key_fingerprint)
+          }}</span>
+        </span>
       </div>
+
+      <p
+        v-if="inspection.signature.status === 'invalid'"
+        class="text-[12.5px] text-error leading-relaxed"
+      >
+        ⚠ Signature invalid — {{ inspection.signature.reason }}. The package may
+        have been tampered with, or signed by a different key. Plinth won't
+        block the import, but you decide whether to trust it.
+      </p>
 
       <p
         v-if="inspection.blocked"
@@ -157,7 +175,7 @@ import type {
   ComponentStatus,
   PackageInspection,
 } from "../bindings";
-import { formatFileSize } from "../utils/format";
+import { formatFileSize, formatFingerprint } from "../utils/format";
 
 const props = defineProps<{
   inspection: PackageInspection | null;

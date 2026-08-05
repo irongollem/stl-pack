@@ -20,6 +20,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 blake3 = "1"
+# Creator manifest signing (docs/3PK.md manifest.sig) — pure Rust, matches
+# the no-OpenSSL stance reqwest/rustls already sets below.
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 image = "0.25.6"
 rusqlite = { version = "0.37", features = ["bundled"] }
 once_cell = "1.21.1"

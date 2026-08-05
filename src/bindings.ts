@@ -153,6 +153,18 @@ async setSettings(settings: Settings) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Get-or-create the creator's signing key and hand back what Settings can
+ * display and publish — the "generate on demand" entry point (#6).
+ */
+async ensureSigningKey() : Promise<Result<SigningKeyInfo, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ensure_signing_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getNsfwAccessState() : Promise<Result<NsfwAccessState, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_nsfw_access_state") };
@@ -2072,7 +2084,7 @@ is_update: boolean;
  * Set when the destination exists but wasn't written by an import (no
  * readable manifest.json) — importing is refused rather than guessed at.
  */
-blocked: string | null; components: ComponentStatus[] }
+blocked: string | null; components: ComponentStatus[]; signature: SignatureStatus }
 /**
  * One entry in `ScatterParams.pieces`: a piece source plus its relative
  * pick weight (`scatter_landscape.py::pick_piece_kind` draws by weight from
@@ -2475,6 +2487,25 @@ scatter_library_dir?: string | null;
  * store has no such key.
  */
 edge_stats_max_tris?: number | null }
+/**
+ * How a `manifest.sig` (or its absence) checks out against the exact
+ * manifest.json bytes read from the same archive.
+ */
+export type SignatureStatus = 
+/**
+ * No manifest.sig entry — a normal, unsigned pack.
+ */
+{ status: "unsigned" } | { status: "valid"; key_fingerprint: string } | 
+/**
+ * Present but wrong: tampered manifest, wrong key, or malformed sig.
+ * One loud bucket; `reason` says which.
+ */
+{ status: "invalid"; reason: string }
+/**
+ * What Settings shows once a key exists — enough to publish the
+ * fingerprint elsewhere; never the private key.
+ */
+export type SigningKeyInfo = { public_key: string; key_fingerprint: string }
 export type StartedStatus = { job_id: string; total_files: number; total_size_kb: number }
 /**
  * A model as the release builder stages it and `model.json` records it.

@@ -18,6 +18,7 @@ use crate::catalog::layout;
 use crate::catalog::pack::{self, edited_aside_path, PACK_SIDECAR_NAME};
 use crate::error::AppError;
 use crate::manifest::{self, Component, Manifest, ManifestFile};
+use crate::signing::{self, SignatureStatus};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -101,14 +102,17 @@ pub struct PackageInspection {
     /// readable manifest.json) — importing is refused rather than guessed at.
     pub blocked: Option<String>,
     pub components: Vec<ComponentStatus>,
+    pub signature: SignatureStatus,
 }
 
-/// Read `manifest.json` from inside a `release.3pk`.
-pub fn read_manifest(package_path: &Path) -> Result<Manifest, AppError> {
+fn open_package(package_path: &Path) -> Result<zip::ZipArchive<std::fs::File>, AppError> {
     let file = std::fs::File::open(package_path)
         .map_err(|e| AppError::IoError(format!("Cannot open {}: {}", package_path.display(), e)))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| AppError::InvalidInput(format!("Not a readable package: {}", e)))?;
+    zip::ZipArchive::new(file)
+        .map_err(|e| AppError::InvalidInput(format!("Not a readable package: {}", e)))
+}
+
+fn manifest_text(archive: &mut zip::ZipArchive<std::fs::File>) -> Result<String, AppError> {
     let mut entry = archive.by_name("manifest.json").map_err(|_| {
         AppError::InvalidInput(
             "No manifest.json inside — this package predates the 3pk manifest".into(),
@@ -118,7 +122,11 @@ pub fn read_manifest(package_path: &Path) -> Result<Manifest, AppError> {
     entry
         .read_to_string(&mut text)
         .map_err(|e| AppError::IoError(format!("Failed to read manifest: {}", e)))?;
-    let manifest = Manifest::from_json(&text)?;
+    Ok(text)
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, AppError> {
+    let manifest = Manifest::from_json(text)?;
     if !manifest.is_readable() {
         return Err(AppError::InvalidInput(format!(
             "This package uses 3pk format v{} — this app reads v{}",
@@ -127,6 +135,35 @@ pub fn read_manifest(package_path: &Path) -> Result<Manifest, AppError> {
         )));
     }
     Ok(manifest)
+}
+
+/// Read `manifest.json` from inside a `release.3pk`.
+pub fn read_manifest(package_path: &Path) -> Result<Manifest, AppError> {
+    let mut archive = open_package(package_path)?;
+    let text = manifest_text(&mut archive)?;
+    parse_manifest(&text)
+}
+
+/// Same as `read_manifest`, plus how `manifest.sig` (if present) checks out
+/// against the exact bytes just read — inspect is the only place a
+/// signature is classified, since it's the pre-import decision point.
+fn read_manifest_with_signature(package_path: &Path) -> Result<(Manifest, SignatureStatus), AppError> {
+    let mut archive = open_package(package_path)?;
+    let text = manifest_text(&mut archive)?;
+    let manifest = parse_manifest(&text)?;
+    let signature = match archive.by_name("manifest.sig") {
+        Err(_) => SignatureStatus::Unsigned,
+        Ok(mut entry) => {
+            let mut sig_text = String::new();
+            match entry.read_to_string(&mut sig_text) {
+                Ok(_) => signing::classify_signature(&sig_text, text.as_bytes()),
+                Err(_) => SignatureStatus::Invalid {
+                    reason: "manifest.sig could not be read".into(),
+                },
+            }
+        }
+    };
+    Ok((manifest, signature))
 }
 
 /// The manifest a previous import left in the release dir, if any. Unreadable
@@ -213,7 +250,7 @@ pub fn inspect_package(
     library_dir: &Path,
     conn: &Connection,
 ) -> Result<PackageInspection, AppError> {
-    let manifest = read_manifest(package_path)?;
+    let (manifest, signature) = read_manifest_with_signature(package_path)?;
     let package_dir = package_path
         .parent()
         .ok_or_else(|| AppError::InvalidInput("Package has no parent directory".into()))?;
@@ -303,6 +340,7 @@ pub fn inspect_package(
         is_update: local.is_some(),
         blocked,
         components,
+        signature,
     })
 }
 
@@ -920,8 +958,17 @@ mod tests {
     }
 
     /// Pack `staged` (release.json + one dir per component) the way finalize
-    /// does: component zips + a release.3pk holding manifest.json.
-    fn pack(staged: &Path, component_names: &[&str], out: &Path) -> Manifest {
+    /// does: component zips + a release.3pk holding manifest.json, signed
+    /// the same way compression_jobs' pack stage does when a key is given —
+    /// signing the exact bytes written to manifest.json, never a
+    /// re-serialized copy, so the round trip pins the same invariant the
+    /// real pack/verify sites share.
+    fn pack_maybe_signed(
+        staged: &Path,
+        component_names: &[&str],
+        out: &Path,
+        signing_key: Option<&ed25519_dalek::SigningKey>,
+    ) -> Manifest {
         std::fs::create_dir_all(out).unwrap();
         let mut packed = Vec::new();
         for name in component_names {
@@ -939,14 +986,59 @@ mod tests {
             });
         }
         let manifest = build_manifest(staged, &packed, "0.1.0").unwrap();
-        std::fs::write(staged.join("manifest.json"), manifest.to_json().unwrap()).unwrap();
+        let manifest_bytes = manifest.to_json().unwrap().into_bytes();
+        std::fs::write(staged.join("manifest.json"), &manifest_bytes).unwrap();
+        let mut container_files = vec![staged.join("manifest.json"), staged.join("release.json")];
+        if let Some(key) = signing_key {
+            let sig = signing::sign_manifest(key, &manifest_bytes);
+            std::fs::write(
+                staged.join("manifest.sig"),
+                serde_json::to_string_pretty(&sig).unwrap(),
+            )
+            .unwrap();
+            container_files.push(staged.join("manifest.sig"));
+        }
         compress_files(
-            &[staged.join("manifest.json"), staged.join("release.json")],
+            &container_files,
             std::fs::File::create(out.join("release.3pk")).unwrap(),
             None::<fn(u32) -> bool>,
         )
         .unwrap();
         manifest
+    }
+
+    fn pack(staged: &Path, component_names: &[&str], out: &Path) -> Manifest {
+        pack_maybe_signed(staged, component_names, out, None)
+    }
+
+    /// Rewrites one entry's bytes in an already-built zip, leaving every
+    /// other entry untouched — simulates an attacker tampering with a
+    /// package after it left the signer's hands.
+    fn replace_zip_entry(zip_path: &Path, entry_name: &str, new_bytes: &[u8]) {
+        let file = std::fs::File::open(zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entries: Vec<(String, Vec<u8>)> = Vec::with_capacity(archive.len());
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let name = entry.name().to_string();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            entries.push((name, bytes));
+        }
+        drop(archive);
+        for (name, bytes) in entries.iter_mut() {
+            if name == entry_name {
+                *bytes = new_bytes.to_vec();
+            }
+        }
+        let out_file = std::fs::File::create(zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(out_file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, bytes) in entries {
+            writer.start_file(&name, options).unwrap();
+            std::io::Write::write_all(&mut writer, &bytes).unwrap();
+        }
+        writer.finish().unwrap();
     }
 
     /// Pack a release with the real writer, then import it elsewhere and
@@ -1614,6 +1706,155 @@ mod tests {
         assert!(outcome.components.is_empty());
         assert_eq!(outcome.errors.len(), 1);
         assert!(outcome.errors[0].contains("packed at rest"), "{:?}", outcome.errors);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn signed_release_fixture(dir: &Path) -> (PathBuf, PathBuf) {
+        let staged = dir.join("staged");
+        let component = staged.join("knight");
+        std::fs::create_dir_all(&component).unwrap();
+        std::fs::write(component.join("body.stl"), b"knight-body-bytes").unwrap();
+        write_model_json(&component, "knight", &["body.stl"]);
+        write_release_json(&staged);
+        (staged, dir.join("library"))
+    }
+
+    #[test]
+    fn inspect_reports_unsigned_when_there_is_no_manifest_sig() {
+        let conn = test_conn();
+        let dir = temp("sig_unsigned");
+        let (staged, library) = signed_release_fixture(&dir);
+        let out = dir.join("packed");
+        pack(&staged, &["knight"], &out);
+        std::fs::create_dir_all(&library).unwrap();
+
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
+        assert_eq!(inspection.signature, SignatureStatus::Unsigned);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inspect_reports_valid_after_a_signed_pack_round_trips() {
+        let conn = test_conn();
+        let dir = temp("sig_valid");
+        let (staged, library) = signed_release_fixture(&dir);
+        let key = signing::ensure_key(&dir.join("key.json")).unwrap();
+        let expected_fingerprint = signing::key_info(&key).key_fingerprint;
+        let out = dir.join("packed");
+        pack_maybe_signed(&staged, &["knight"], &out, Some(&key));
+        std::fs::create_dir_all(&library).unwrap();
+
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
+        assert_eq!(
+            inspection.signature,
+            SignatureStatus::Valid {
+                key_fingerprint: expected_fingerprint
+            }
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inspect_reports_invalid_when_the_packed_manifest_is_tampered() {
+        let conn = test_conn();
+        let dir = temp("sig_tampered");
+        let (staged, library) = signed_release_fixture(&dir);
+        let key = signing::ensure_key(&dir.join("key.json")).unwrap();
+        let out = dir.join("packed");
+        pack_maybe_signed(&staged, &["knight"], &out, Some(&key));
+        std::fs::create_dir_all(&library).unwrap();
+
+        // Flip one byte of the manifest.json the archive actually holds —
+        // the signature was over the untampered bytes, so it must now fail.
+        // Edited inside a string VALUE ("Knights" -> "KnightS"), not a key
+        // or arbitrary byte: an arbitrary flip can land outside valid UTF-8
+        // (failing at the read step) or inside a required key (failing
+        // manifest parsing) before signature classification is ever reached.
+        let manifest_text = std::fs::read_to_string(staged.join("manifest.json")).unwrap();
+        let tampered_text = manifest_text.replacen("Knights", "KnightS", 1);
+        assert_ne!(tampered_text, manifest_text, "fixture must contain the substring to tamper");
+        replace_zip_entry(
+            &out.join("release.3pk"),
+            "manifest.json",
+            tampered_text.as_bytes(),
+        );
+
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
+        assert!(matches!(inspection.signature, SignatureStatus::Invalid { .. }));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inspect_reports_invalid_when_the_signature_claims_a_key_that_did_not_produce_it() {
+        let conn = test_conn();
+        let dir = temp("sig_wrong_key");
+        let (staged, library) = signed_release_fixture(&dir);
+        let key_a = signing::ensure_key(&dir.join("key_a.json")).unwrap();
+        let key_b = signing::ensure_key(&dir.join("key_b.json")).unwrap();
+        let out = dir.join("packed");
+        pack_maybe_signed(&staged, &["knight"], &out, Some(&key_a));
+        std::fs::create_dir_all(&library).unwrap();
+
+        // key_a's real signature bytes, relabeled as key_b's — a forged
+        // attribution, not just corrupted bytes.
+        let sig_text = std::fs::read_to_string(staged.join("manifest.sig")).unwrap();
+        let mut sig: signing::ManifestSignature = serde_json::from_str(&sig_text).unwrap();
+        let key_b_info = signing::key_info(&key_b);
+        sig.public_key = key_b_info.public_key;
+        sig.key_fingerprint = key_b_info.key_fingerprint;
+        replace_zip_entry(
+            &out.join("release.3pk"),
+            "manifest.sig",
+            serde_json::to_string_pretty(&sig).unwrap().as_bytes(),
+        );
+
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
+        assert!(matches!(inspection.signature, SignatureStatus::Invalid { .. }));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn inspect_reports_invalid_when_manifest_sig_is_malformed_json() {
+        let conn = test_conn();
+        let dir = temp("sig_malformed");
+        let (staged, library) = signed_release_fixture(&dir);
+        let key = signing::ensure_key(&dir.join("key.json")).unwrap();
+        let out = dir.join("packed");
+        pack_maybe_signed(&staged, &["knight"], &out, Some(&key));
+        std::fs::create_dir_all(&library).unwrap();
+
+        replace_zip_entry(&out.join("release.3pk"), "manifest.sig", b"{ not json");
+
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
+        assert!(matches!(inspection.signature, SignatureStatus::Invalid { .. }));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// import copies manifest.sig into the release dir alongside
+    /// manifest.json (via extract_release_payload's "everything except
+    /// manifest.json" rule), so a later local re-inspect/re-pack can still
+    /// see the provenance the original import verified.
+    #[test]
+    fn import_keeps_manifest_sig_next_to_the_local_manifest() {
+        let dir = temp("sig_import_copy");
+        let (staged, library) = signed_release_fixture(&dir);
+        let key = signing::ensure_key(&dir.join("key.json")).unwrap();
+        let out = dir.join("packed");
+        pack_maybe_signed(&staged, &["knight"], &out, Some(&key));
+        std::fs::create_dir_all(&library).unwrap();
+
+        let outcome = import_release(&out.join("release.3pk"), &library, None).unwrap();
+        let release_dir = Path::new(&outcome.dest_dir);
+        assert_eq!(
+            std::fs::read(release_dir.join("manifest.sig")).unwrap(),
+            std::fs::read(staged.join("manifest.sig")).unwrap()
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
