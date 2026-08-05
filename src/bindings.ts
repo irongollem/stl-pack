@@ -2084,7 +2084,7 @@ is_update: boolean;
  * Set when the destination exists but wasn't written by an import (no
  * readable manifest.json) — importing is refused rather than guessed at.
  */
-blocked: string | null; components: ComponentStatus[] }
+blocked: string | null; components: ComponentStatus[]; signature: SignatureStatus }
 /**
  * One entry in `ScatterParams.pieces`: a piece source plus its relative
  * pick weight (`scatter_landscape.py::pick_piece_kind` draws by weight from
@@ -2487,6 +2487,20 @@ scatter_library_dir?: string | null;
  * store has no such key.
  */
 edge_stats_max_tris?: number | null }
+/**
+ * How a `manifest.sig` (or its absence) checks out against the exact
+ * manifest.json bytes read from the same archive.
+ */
+export type SignatureStatus = 
+/**
+ * No manifest.sig entry — a normal, unsigned pack.
+ */
+{ status: "unsigned" } | { status: "valid"; key_fingerprint: string } | 
+/**
+ * Present but wrong: tampered manifest, wrong key, or malformed sig.
+ * One loud bucket; `reason` says which.
+ */
+{ status: "invalid"; reason: string }
 /**
  * What Settings shows once a key exists — enough to publish the
  * fingerprint elsewhere; never the private key.

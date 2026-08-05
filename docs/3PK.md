@@ -154,6 +154,44 @@ those bytes five times helps no one. The rules:
 Non-dedup readers/writers interoperate: a v1 archive without elision is
 just the degenerate case where every checksum is stored under every name.
 
+## Signing (optional, additive)
+
+A creator MAY sign a release. When a local signing key exists at pack
+time, the packer writes `manifest.sig` — a detached JSON signature — next
+to `manifest.json` inside `release.3pk`:
+
+```jsonc
+{
+  "algo": "ed25519",
+  "public_key": "<base64>",
+  "key_fingerprint": "<first 16 hex chars of blake3(public_key)>",
+  "signature": "<base64, over the exact manifest.json bytes as packed>",
+}
+```
+
+The signature covers the raw bytes written to `manifest.json`, not the
+parsed JSON value, so verification never depends on re-serializing
+anything the same way the packer did. No key = no `manifest.sig`; every
+reader, old or new, treats that as a normal unsigned pack — nothing about
+`Manifest::is_readable` or the `version` field changes.
+
+On inspect, a reader that finds `manifest.sig` verifies it against the
+exact bytes read back for `manifest.json` and reports one of three
+states:
+
+- **Unsigned** — no `manifest.sig` entry. The common case; not an error.
+- **Valid** — the signature checks out; the reader also gets the signer's
+  `key_fingerprint` to display.
+- **Invalid** — present but wrong (tampered manifest, wrong key, or a
+  malformed `manifest.sig`). Reported, never silently dropped, but it
+  does not block import — v1 has no key registry or trust pinning, so the
+  user decides.
+
+Signing keys are local-only in v1: one Ed25519 keypair generated on
+demand from Settings per install, stored in the app data dir, never
+uploaded anywhere. There is no CA, no revocation, and no cross-device
+identity yet (see Out of scope below).
+
 ## Write path (packer)
 
 At pack time the builder already stages models with their catalog
@@ -168,7 +206,9 @@ metadata. Packing then:
    plans zero moves for it.
 3. Emits `manifest.json` from the staged metadata **including
    `file_variants`** for any split folders, plus release-level info.
-4. Zips `manifest.json` + release images + licence into `release.3pk`.
+4. Zips `manifest.json` + release images + licence into `release.3pk`,
+   signing `manifest.json`'s exact bytes into a sibling `manifest.sig`
+   first when a local signing key exists (see Signing above).
 
 Compression is ZIP in v1 (the only writer today); TAR+Zstd is a tracked
 upgrade and only changes component `archive` extensions + the reader's
@@ -188,6 +228,8 @@ touches the disk until the user confirms:
    **unchanged** (identical), **packed** (the local copy is compressed at
    rest — unpack first), or **missing archive** (the sibling zip isn't
    next to the `.3pk`).
+4. Classify `manifest.sig`, if present, against those same bytes (see
+   Signing above) — surfaced to the import dialog, never blocking it.
 
 The import dialog pre-selects new + changed components; the user can
 deselect anything or re-select an unchanged component to repair deleted
@@ -208,7 +250,10 @@ Finally the manifest is written into the release dir recording **what is
 actually on disk**: new entries for components that imported, the
 previous entry for ones that failed or were deselected. A partially
 failed update therefore still reads as "changed" on the next inspect —
-update detection stays truthful across partial runs.
+update detection stays truthful across partial runs. `manifest.sig`, when
+present, lands in the release dir alongside it (part of the release-level
+payload, like `release.json` and the images) so the provenance the import
+verified stays with the local copy.
 
 A catalog scan afterwards restores the packed curation from the
 `model.json` sidecars. Legacy `release.json` / `model.json` sidecars
@@ -231,3 +276,7 @@ present.
   distribution channel that doesn't exist yet).
 - TAR+Zstd component compression (todo: replace ZIP for local
   compression/cataloging).
+- Key registry / trust pinning for signed manifests (first-seen-key TOFU),
+  and any CA or revocation story.
+- OS keychain-backed private key storage (v1 keeps the signing key in the
+  app data dir).
