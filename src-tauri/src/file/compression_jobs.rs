@@ -144,12 +144,17 @@ pub async fn perform_compression(
     )));
 
     let app_version = app_handle.package_info().version.to_string();
+    // Resolved once here (needs the AppHandle) and just loaded — never
+    // generated — inside the blocking task: packing is never the place a
+    // signing key gets created, only Settings' ensure_signing_key is.
+    let signing_key_path = crate::signing::key_path(&app_handle)?;
     run_compression_tasks(
         progress_tracker,
         &release_dir_path,
         &target_dir_path,
         &extension,
         &app_version,
+        &signing_key_path,
         &group_and_model_dirs,
         &files_for_3pk,
         &files_for_zip,
@@ -176,6 +181,7 @@ async fn run_compression_tasks(
     target_dir_path: &Path,
     extension: &str,
     app_version: &str,
+    signing_key_path: &Path,
     group_and_model_dirs: &[PathBuf],
     files_for_3pk: &[PathBuf],
     files_for_zip: &[PathBuf],
@@ -227,10 +233,24 @@ async fn run_compression_tasks(
     if !components.is_empty() {
         let manifest =
             super::pack_manifest::build_manifest(release_dir_path, &components, app_version)?;
+        // The exact bytes written here are what gets zipped verbatim AND
+        // (below) what gets signed — no re-serialization between the two,
+        // so a signature always covers precisely what a reader will hash.
+        let manifest_bytes = manifest.to_json()?.into_bytes();
         let manifest_path = release_dir_path.join("manifest.json");
-        fs::write(&manifest_path, manifest.to_json()?)
+        fs::write(&manifest_path, &manifest_bytes)
             .map_err(|e| AppError::IoError(format!("Failed to write manifest: {}", e)))?;
         files_for_3pk.push(manifest_path);
+
+        // No key = unsigned pack, silently fine — signing is opt-in via
+        // Settings' ensure_signing_key, never a gate on packing.
+        if let Some(signing_key) = crate::signing::load_key(signing_key_path)? {
+            let signature = crate::signing::sign_manifest(&signing_key, &manifest_bytes);
+            let signature_path = release_dir_path.join("manifest.sig");
+            fs::write(&signature_path, serde_json::to_string_pretty(&signature)?)
+                .map_err(|e| AppError::IoError(format!("Failed to write manifest.sig: {}", e)))?;
+            files_for_3pk.push(signature_path);
+        }
     }
 
     // Stage 3 — release.3pk (manifest + images + jsons) and the legacy
