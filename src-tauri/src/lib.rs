@@ -44,6 +44,7 @@ use content_filter::{
 use file::commands::{
     add_models, cancel_compression, create_release, finalize_release, import_release,
     inspect_release_package, list_release_drafts, load_release_draft, open_with_default_app,
+    recompile_release_from_library,
 };
 use minihoard::{
     cancel_minihoard, cancel_minihoard_download, detect_minihoard, minihoard_list,
@@ -94,6 +95,7 @@ fn create_specta_builder() -> Builder {
             open_with_default_app,
             import_release,
             inspect_release_package,
+            recompile_release_from_library,
             list_release_drafts,
             load_release_draft,
             settings::get_settings,

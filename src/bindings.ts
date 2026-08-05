@@ -95,6 +95,22 @@ async inspectReleasePackage(packagePath: string, libraryDir: string) : Promise<R
 }
 },
 /**
+ * "Import what you own": for each named component, extract the sibling
+ * archive the normal way when it checks out, otherwise materialize
+ * whatever this library already holds by checksum — including a component
+ * whose archive isn't present next to the .3pk at all. A partial result
+ * still keeps normal catalog rows for what landed; nothing is invented for
+ * what didn't, and re-running after the rest turns up completes it.
+ */
+async recompileReleaseFromLibrary(packagePath: string, libraryDir: string, components: string[] | null) : Promise<Result<RecompileOutcome, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("recompile_release_from_library", { packagePath, libraryDir, components }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * WIP releases that never got packed — a successful finalize removes the
  * scratch folder (compression_jobs::perform_compression), so any directory
  * still holding a release.json here is by definition unfinished.
@@ -2114,6 +2130,22 @@ export type ProvisionStartedStatus = { job_id: string;
  * The pinned Blender being installed, e.g. "5.1.2".
  */
 version: string }
+export type RecompileOutcome = { release_name: string; designer: string; dest_dir: string; components: RecompiledComponent[]; 
+/**
+ * Components a library donor couldn't help either (e.g. packed at
+ * rest).
+ */
+errors: string[]; warnings: string[] }
+/**
+ * One component's outcome from `recompile_release`.
+ */
+export type RecompiledComponent = { name: string; 
+/**
+ * True when every manifest file for this component landed on disk —
+ * via the archive or via library donors. `files_landed` can be > 0
+ * even when this is false: "not complete" isn't "nothing happened".
+ */
+complete: boolean; files_landed: number; files_missing: number; missing_bytes: number }
 export type Release = { name: string; designer: string; description: string; date: string; version: string; model_references: ModelReference[]; groups: string[]; release_dir: string; images: string[]; other_files: string[] }
 /**
  * A WIP release sitting in the scratch dir, not yet packed — surfaced so

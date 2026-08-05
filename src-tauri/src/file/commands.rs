@@ -312,6 +312,33 @@ pub async fn import_release(
     .map_err(|e| AppError::ConfigError(format!("Import task failed: {}", e)))?
 }
 
+/// "Import what you own": for each named component, extract the sibling
+/// archive the normal way when it checks out, otherwise materialize
+/// whatever this library already holds by checksum — including a component
+/// whose archive isn't present next to the .3pk at all. A partial result
+/// still keeps normal catalog rows for what landed; nothing is invented for
+/// what didn't, and re-running after the rest turns up completes it.
+#[tauri::command]
+#[specta::specta]
+pub async fn recompile_release_from_library(
+    app_handle: AppHandle,
+    package_path: String,
+    library_dir: String,
+    components: Option<Vec<String>>,
+) -> Result<super::import::RecompileOutcome, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::catalog::commands::open_db(&app_handle)?;
+        super::import::recompile_release(
+            &conn,
+            std::path::Path::new(&package_path),
+            std::path::Path::new(&library_dir),
+            components,
+        )
+    })
+    .await
+    .map_err(|e| AppError::ConfigError(format!("Recompile task failed: {}", e)))?
+}
+
 /// Diff a `release.3pk` against the library without touching anything: per
 /// component, is it new, changed, unchanged, packed at rest, or missing its
 /// archive — and, regardless of that state, how much of it this library

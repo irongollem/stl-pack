@@ -110,6 +110,19 @@
             {{ inspection.blocked ? "Close" : "Cancel" }}
           </button>
           <button
+            v-if="!inspection.blocked && recompileEligible"
+            type="button"
+            class="btn btn-sm btn-secondary"
+            :disabled="importing"
+            @click="emit('recompile', null)"
+          >
+            <span
+              v-if="importing"
+              class="loading loading-spinner loading-xs"
+            ></span>
+            Import what you own
+          </button>
+          <button
             v-if="!inspection.blocked"
             type="button"
             class="btn btn-sm btn-primary"
@@ -153,6 +166,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   confirm: [components: string[]];
+  recompile: [components: string[] | null];
   cancel: [];
 }>();
 
@@ -214,6 +228,16 @@ const ownership = computed(() => {
     missingBytes: components.reduce((sum, c) => sum + c.missing_bytes, 0),
   };
 });
+
+// Worth offering "Import what you own" when at least one non-packed
+// component is short a file — packed components can't be helped by a
+// donor (they're already complete, just compressed) so recompiling one
+// would only ever refuse it.
+const recompileEligible = computed(() =>
+  (props.inspection?.components ?? []).some(
+    (c) => c.state !== "packed" && c.files_owned < c.file_count,
+  ),
+);
 
 const summaryLine = computed(() => {
   const components = props.inspection?.components ?? [];

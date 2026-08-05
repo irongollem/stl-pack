@@ -19,8 +19,13 @@ const Releases = defineAsyncComponent(() => import("./views/Releases.vue"));
 const Render = defineAsyncComponent(() => import("./views/Render.vue"));
 const Settings = defineAsyncComponent(() => import("./views/Settings.vue"));
 
-const { pendingImport, importing, confirmImport, cancelImport } =
-  use3DPackageHandler();
+const {
+  pendingImport,
+  importing,
+  confirmImport,
+  confirmRecompile,
+  cancelImport,
+} = use3DPackageHandler();
 const releasesStore = useReleasesStore();
 
 const currentTabComponent = computed(() => {
@@ -60,6 +65,7 @@ const currentTabComponent = computed(() => {
     :inspection="pendingImport?.inspection ?? null"
     :importing="importing"
     @confirm="confirmImport"
+    @recompile="confirmRecompile"
     @cancel="cancelImport"
   />
 </template>
