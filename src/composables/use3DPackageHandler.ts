@@ -19,7 +19,10 @@ export interface PendingImport {
  * the selective-import dialog (new release: everything pre-checked; update:
  * only the changed components). The confirmed import verifies each
  * component against the manifest checksums, rematerializes dedup-elided
- * files, and a catalog scan restores the packed curation.
+ * files, and a catalog scan restores the packed curation. confirmRecompile
+ * is the fallback for what the archive path can't cover: it materializes
+ * owned files from anywhere in the library by checksum, even when a
+ * component's sibling archive is missing entirely.
  */
 export function use3DPackageHandler() {
   const toastStore = useToastStore();
@@ -104,6 +107,49 @@ export function use3DPackageHandler() {
     }
   };
 
+  const confirmRecompile = async (components: string[] | null) => {
+    const pending = pendingImport.value;
+    if (!pending || importing.value) return;
+    importing.value = true;
+    try {
+      const result = await commands.recompileReleaseFromLibrary(
+        pending.filePath,
+        pending.library,
+        components,
+      );
+      if (result.status !== "ok") {
+        toastStore.reportError(
+          "Recompile from your library failed",
+          result.error,
+        );
+        return;
+      }
+      const outcome = result.data;
+      for (const error of outcome.errors) toastStore.addToast(error, "error");
+      for (const warning of outcome.warnings)
+        toastStore.addToast(warning, "warning");
+      const landedFiles = outcome.components.reduce(
+        (sum, c) => sum + c.files_landed,
+        0,
+      );
+      const completeCount = outcome.components.filter((c) => c.complete).length;
+      const allComplete = completeCount === outcome.components.length;
+      toastStore.addToast(
+        `Recompiled "${outcome.release_name}" from your library — ${completeCount} of ${outcome.components.length} component${outcome.components.length === 1 ? "" : "s"} complete, ${landedFiles} files landed`,
+        allComplete ? "success" : "warning",
+      );
+      pendingImport.value = null;
+
+      if (pending.ownerRoot) {
+        await commands.startCatalogScan(pending.ownerRoot);
+      }
+    } catch (error) {
+      toastStore.reportError("Failed to recompile from your library", error);
+    } finally {
+      importing.value = false;
+    }
+  };
+
   const cancelImport = () => {
     if (!importing.value) pendingImport.value = null;
   };
@@ -133,6 +179,7 @@ export function use3DPackageHandler() {
     pendingImport,
     importing,
     confirmImport,
+    confirmRecompile,
     cancelImport,
   };
 }

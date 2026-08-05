@@ -36,8 +36,9 @@ pub struct FileRow {
     /// loose on disk — `path` is then the location the file WOULD occupy,
     /// which keeps every path-keyed table stable across pack/unpack.
     pub archive_path: Option<String>,
-    /// `blake3:<hex>` known at scan time (pack sidecars carry one per file),
-    /// letting packed files join duplicate detection without disk reads.
+    /// Bare blake3 hex known at scan time (pack sidecars carry one per
+    /// file, prefix stripped by `pack::bare_hash`), letting packed files
+    /// join duplicate detection without disk reads.
     pub content_hash: Option<String>,
 }
 

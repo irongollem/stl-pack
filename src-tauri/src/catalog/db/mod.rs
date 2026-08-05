@@ -14,8 +14,8 @@ mod search;
 mod test_util;
 
 pub use geometry::{
-    duplicate_groups, duplicate_size_candidates, geometry_satisfies, known_hash, model_geometry,
-    store_file_geometry, store_hash, store_identities, store_merge_results,
+    duplicate_groups, duplicate_size_candidates, find_owner, geometry_satisfies, known_hash,
+    model_geometry, store_file_geometry, store_hash, store_identities, store_merge_results,
     stl_geometry_candidates,
 };
 pub use groups::{

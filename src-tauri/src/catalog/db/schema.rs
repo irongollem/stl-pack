@@ -55,6 +55,8 @@ pub(super) fn init_schema(conn: &Connection) -> Result<(), AppError> {
         );
         CREATE INDEX IF NOT EXISTS idx_files_dir ON files(dir_path);
         CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes);
+        CREATE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash)
+            WHERE content_hash IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS models (
             dir_path     TEXT PRIMARY KEY,

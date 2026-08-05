@@ -33,6 +33,13 @@
         <p class="text-[12.5px] text-base-content/70 leading-relaxed">
           {{ summaryLine }}
         </p>
+        <p
+          v-if="ownership.missingFiles > 0"
+          class="text-[12.5px] text-warning/90 leading-relaxed"
+        >
+          You own {{ ownership.owned }} of {{ ownership.total }} files across
+          this release · {{ formatFileSize(ownership.missingBytes) }} missing.
+        </p>
 
         <div class="flex flex-col gap-1 overflow-y-auto -mx-1 px-1">
           <label
@@ -72,6 +79,15 @@
                   — {{ component.detail }}</template
                 >
               </div>
+              <div
+                v-if="component.files_owned < component.file_count"
+                class="text-[11px] text-warning/70 truncate"
+              >
+                You own {{ component.files_owned }}/{{
+                  component.file_count
+                }}
+                files · {{ formatFileSize(component.missing_bytes) }} missing
+              </div>
             </div>
           </label>
         </div>
@@ -92,6 +108,19 @@
             @click="emit('cancel')"
           >
             {{ inspection.blocked ? "Close" : "Cancel" }}
+          </button>
+          <button
+            v-if="!inspection.blocked && recompileEligible"
+            type="button"
+            class="btn btn-sm btn-secondary"
+            :disabled="importing"
+            @click="emit('recompile', null)"
+          >
+            <span
+              v-if="importing"
+              class="loading loading-spinner loading-xs"
+            ></span>
+            Import what you own
           </button>
           <button
             v-if="!inspection.blocked"
@@ -137,6 +166,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   confirm: [components: string[]];
+  recompile: [components: string[] | null];
   cancel: [];
 }>();
 
@@ -185,6 +215,29 @@ const badge = (state: ComponentState) => {
       return { label: "UNCHANGED", tone: "text-base-content/40" };
   }
 };
+
+// Release-wide rollup of the per-component completeness diff — how much of
+// the WHOLE release this library already owns by checksum, regardless of
+// which components are selected or importable today.
+const ownership = computed(() => {
+  const components = props.inspection?.components ?? [];
+  return {
+    total: components.reduce((sum, c) => sum + c.file_count, 0),
+    owned: components.reduce((sum, c) => sum + c.files_owned, 0),
+    missingFiles: components.reduce((sum, c) => sum + c.missing.length, 0),
+    missingBytes: components.reduce((sum, c) => sum + c.missing_bytes, 0),
+  };
+});
+
+// Worth offering "Import what you own" when at least one non-packed
+// component is short a file — packed components can't be helped by a
+// donor (they're already complete, just compressed) so recompiling one
+// would only ever refuse it.
+const recompileEligible = computed(() =>
+  (props.inspection?.components ?? []).some(
+    (c) => c.state !== "packed" && c.files_owned < c.file_count,
+  ),
+);
 
 const summaryLine = computed(() => {
   const components = props.inspection?.components ?? [];
