@@ -314,17 +314,22 @@ pub async fn import_release(
 
 /// Diff a `release.3pk` against the library without touching anything: per
 /// component, is it new, changed, unchanged, packed at rest, or missing its
-/// archive? Feeds the selective-import dialog shown before an import runs.
+/// archive — and, regardless of that state, how much of it this library
+/// already owns SOMEWHERE by checksum. Feeds the selective-import dialog
+/// shown before an import runs.
 #[tauri::command]
 #[specta::specta]
 pub async fn inspect_release_package(
+    app_handle: AppHandle,
     package_path: String,
     library_dir: String,
 ) -> Result<super::import::PackageInspection, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
+        let conn = crate::catalog::commands::open_db(&app_handle)?;
         super::import::inspect_package(
             std::path::Path::new(&package_path),
             std::path::Path::new(&library_dir),
+            &conn,
         )
     })
     .await

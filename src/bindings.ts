@@ -82,7 +82,9 @@ async importRelease(packagePath: string, libraryDir: string, components: string[
 /**
  * Diff a `release.3pk` against the library without touching anything: per
  * component, is it new, changed, unchanged, packed at rest, or missing its
- * archive? Feeds the selective-import dialog shown before an import runs.
+ * archive — and, regardless of that state, how much of it this library
+ * already owns SOMEWHERE by checksum. Feeds the selective-import dialog
+ * shown before an import runs.
  */
 async inspectReleasePackage(packagePath: string, libraryDir: string) : Promise<Result<PackageInspection, AppError>> {
     try {
@@ -1576,7 +1578,13 @@ model_names: string[];
 /**
  * Why the component can't be imported, for Packed/MissingArchive.
  */
-detail: string | null }
+detail: string | null; 
+/**
+ * How many of `file_count` this library already owns SOMEWHERE, by
+ * checksum — independent of `state`: even a MissingArchive component's
+ * checksums are known from the manifest itself.
+ */
+files_owned: number; missing_bytes: number; missing: MissingFile[] }
 export type CompressionStatus = { Started: StartedStatus } | { Progress: ProgressStatus } | { Completed: CompletedStatus } | { Failed: FailedStatus } | { Cancelled: CancelledStatus }
 export type CompressionType = "SevenZip" | "Zip"
 /**
@@ -1935,6 +1943,10 @@ thumbnail_url: string | null;
  */
 image_url: string | null }
 export type MinihoardStatus = { Line: MinihoardLine } | { Finished: MinihoardFinished }
+/**
+ * One manifest file this library doesn't own anywhere by checksum.
+ */
+export type MissingFile = { name: string; size_bytes: number }
 /**
  * x/y/z are bbox extents; open_edges None means skipped, not clean.
  */

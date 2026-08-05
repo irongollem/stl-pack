@@ -13,10 +13,12 @@
 //! contract unpack_model honors) and deleting files the new version
 //! dropped.
 
+use crate::catalog::db;
 use crate::catalog::layout;
-use crate::catalog::pack::{edited_aside_path, PACK_SIDECAR_NAME};
+use crate::catalog::pack::{self, edited_aside_path, PACK_SIDECAR_NAME};
 use crate::error::AppError;
 use crate::manifest::{self, Component, Manifest, ManifestFile};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::collections::{HashMap, HashSet};
@@ -56,6 +58,13 @@ pub enum ComponentState {
     MissingArchive,
 }
 
+/// One manifest file this library doesn't own anywhere by checksum.
+#[derive(Serialize, Deserialize, Clone, Debug, Type)]
+pub struct MissingFile {
+    pub name: String,
+    pub size_bytes: f64,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Type)]
 pub struct ComponentStatus {
     pub name: String,
@@ -68,6 +77,12 @@ pub struct ComponentStatus {
     pub model_names: Vec<String>,
     /// Why the component can't be imported, for Packed/MissingArchive.
     pub detail: Option<String>,
+    /// How many of `file_count` this library already owns SOMEWHERE, by
+    /// checksum — independent of `state`: even a MissingArchive component's
+    /// checksums are known from the manifest itself.
+    pub files_owned: u32,
+    pub missing_bytes: f64,
+    pub missing: Vec<MissingFile>,
 }
 
 /// What opening a `release.3pk` would do — feeds the selective-import dialog
@@ -166,10 +181,36 @@ fn component_file_count(component: &Component) -> u32 {
     component.models.iter().map(|m| m.files.len() as u32).sum()
 }
 
+/// Diff one component's manifest files against library-wide ownership —
+/// `find_owner` already covers packed-at-rest donors, so this never has to
+/// unpack anything. Independent of the component's archive-based `state`:
+/// even a MissingArchive component's checksums are known from the manifest.
+fn component_completeness(
+    conn: &Connection,
+    component: &Component,
+) -> Result<(u32, f64, Vec<MissingFile>), AppError> {
+    let mut owned = 0u32;
+    let mut missing_bytes = 0f64;
+    let mut missing = Vec::new();
+    for file in component.models.iter().flat_map(|m| &m.files) {
+        if db::find_owner(conn, pack::bare_hash(&file.checksum))?.is_some() {
+            owned += 1;
+        } else {
+            missing_bytes += file.size_bytes as f64;
+            missing.push(MissingFile {
+                name: file.name.clone(),
+                size_bytes: file.size_bytes as f64,
+            });
+        }
+    }
+    Ok((owned, missing_bytes, missing))
+}
+
 /// Diff an incoming `release.3pk` against the library without touching disk.
 pub fn inspect_package(
     package_path: &Path,
     library_dir: &Path,
+    conn: &Connection,
 ) -> Result<PackageInspection, AppError> {
     let manifest = read_manifest(package_path)?;
     let package_dir = package_path
@@ -195,61 +236,62 @@ pub fn inspect_package(
         .map(|m| m.components.iter().map(|c| (c.name.as_str(), c)).collect())
         .unwrap_or_default();
 
-    let components = manifest
-        .components
-        .iter()
-        .map(|component| {
-            let component_dest = dest.join(layout::sanitize_segment(&component.name));
-            // component.archive is attacker-authorable manifest text; reject
-            // before it ever becomes a path so a value like "../../secrets"
-            // or "C:evil.zip" can't be opened/hashed/extracted from outside
-            // package_dir. Reported through the same MissingArchive state a
-            // legitimate absent sibling gets — the outcome for the UI is
-            // identical ("can't import this component").
-            let (state, detail) = if safe_relative(&component.archive).is_none() {
-                (
-                    ComponentState::MissingArchive,
-                    Some(format!(
-                        "'{}' is not a safe archive path — refusing to import",
-                        component.archive
-                    )),
-                )
-            } else if !package_dir.join(&component.archive).is_file() {
-                (
-                    ComponentState::MissingArchive,
-                    Some(format!(
-                        "'{}' was not found next to the .3pk",
-                        component.archive
-                    )),
-                )
-            } else if local.is_some() && contains_pack_sidecar(&component_dest) {
-                (
-                    ComponentState::Packed,
-                    Some("packed at rest — unpack it in the catalog first".into()),
-                )
-            } else {
-                match old_by_name.get(component.name.as_str()) {
-                    None => (ComponentState::New, None),
-                    Some(old) if old.checksum == component.checksum => {
-                        (ComponentState::Unchanged, None)
-                    }
-                    Some(_) => (ComponentState::Changed, None),
+    let mut components = Vec::with_capacity(manifest.components.len());
+    for component in &manifest.components {
+        let component_dest = dest.join(layout::sanitize_segment(&component.name));
+        // component.archive is attacker-authorable manifest text; reject
+        // before it ever becomes a path so a value like "../../secrets"
+        // or "C:evil.zip" can't be opened/hashed/extracted from outside
+        // package_dir. Reported through the same MissingArchive state a
+        // legitimate absent sibling gets — the outcome for the UI is
+        // identical ("can't import this component").
+        let (state, detail) = if safe_relative(&component.archive).is_none() {
+            (
+                ComponentState::MissingArchive,
+                Some(format!(
+                    "'{}' is not a safe archive path — refusing to import",
+                    component.archive
+                )),
+            )
+        } else if !package_dir.join(&component.archive).is_file() {
+            (
+                ComponentState::MissingArchive,
+                Some(format!(
+                    "'{}' was not found next to the .3pk",
+                    component.archive
+                )),
+            )
+        } else if local.is_some() && contains_pack_sidecar(&component_dest) {
+            (
+                ComponentState::Packed,
+                Some("packed at rest — unpack it in the catalog first".into()),
+            )
+        } else {
+            match old_by_name.get(component.name.as_str()) {
+                None => (ComponentState::New, None),
+                Some(old) if old.checksum == component.checksum => {
+                    (ComponentState::Unchanged, None)
                 }
-            };
-            ComponentStatus {
-                name: component.name.clone(),
-                state,
-                size_bytes: component.size_bytes as f64,
-                file_count: component_file_count(component),
-                model_names: component
-                    .models
-                    .iter()
-                    .map(|m| m.custom_name.clone().unwrap_or_else(|| m.name.clone()))
-                    .collect(),
-                detail,
+                Some(_) => (ComponentState::Changed, None),
             }
-        })
-        .collect();
+        };
+        let (files_owned, missing_bytes, missing) = component_completeness(conn, component)?;
+        components.push(ComponentStatus {
+            name: component.name.clone(),
+            state,
+            size_bytes: component.size_bytes as f64,
+            file_count: component_file_count(component),
+            model_names: component
+                .models
+                .iter()
+                .map(|m| m.custom_name.clone().unwrap_or_else(|| m.name.clone()))
+                .collect(),
+            detail,
+            files_owned,
+            missing_bytes,
+            missing,
+        });
+    }
 
     Ok(PackageInspection {
         release_name: manifest.release.name,
@@ -533,6 +575,12 @@ mod tests {
         dir
     }
 
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        db::test_init(&conn);
+        conn
+    }
+
     fn write_release_json(staged: &Path) {
         std::fs::write(
             staged.join("release.json"),
@@ -607,6 +655,7 @@ mod tests {
     /// check the tree + curation sidecar arrived intact — the full loop.
     #[test]
     fn packed_release_imports_verified_and_complete() {
+        let conn = test_conn();
         let dir = temp("roundtrip");
         let staged = dir.join("staged");
         let component = staged.join("knight");
@@ -662,7 +711,7 @@ mod tests {
         assert!(outcome.errors[0].contains("checksum mismatch"));
         // …and the failed component is NOT recorded as present, so the next
         // inspect still offers it
-        let inspection = inspect_package(&out.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
         assert_eq!(inspection.components[0].state, ComponentState::New);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -670,6 +719,7 @@ mod tests {
 
     #[test]
     fn inspect_diffs_components_against_the_local_manifest() {
+        let conn = test_conn();
         let dir = temp("inspect");
         let staged = dir.join("staged");
         for (name, bytes) in [("knight", &b"knight-v1"[..]), ("goblin", &b"goblin-v1"[..])] {
@@ -685,7 +735,7 @@ mod tests {
         std::fs::create_dir_all(&library).unwrap();
 
         // Not imported yet: everything is new
-        let inspection = inspect_package(&out1.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out1.join("release.3pk"), &library, &conn).unwrap();
         assert!(!inspection.is_update);
         assert!(inspection.blocked.is_none());
         assert!(inspection
@@ -696,7 +746,7 @@ mod tests {
         import_release(&out1.join("release.3pk"), &library, None).unwrap();
 
         // Imported and untouched: everything is unchanged
-        let inspection = inspect_package(&out1.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out1.join("release.3pk"), &library, &conn).unwrap();
         assert!(inspection.is_update);
         assert!(inspection
             .components
@@ -707,7 +757,7 @@ mod tests {
         std::fs::write(staged.join("knight/body.stl"), b"knight-v2").unwrap();
         let out2 = dir.join("out2");
         pack(&staged, &["knight", "goblin"], &out2);
-        let inspection = inspect_package(&out2.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out2.join("release.3pk"), &library, &conn).unwrap();
         let state = |name: &str| {
             inspection
                 .components
@@ -721,7 +771,7 @@ mod tests {
 
         // A component archive missing next to the .3pk can't import
         std::fs::remove_file(out2.join("goblin.zip")).unwrap();
-        let inspection = inspect_package(&out2.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out2.join("release.3pk"), &library, &conn).unwrap();
         let goblin = inspection
             .components
             .iter()
@@ -733,7 +783,7 @@ mod tests {
         // A locally packed-at-rest component refuses updates until unpacked
         let knight_dir = Path::new(&inspection.dest_dir).join("knight");
         std::fs::write(knight_dir.join(PACK_SIDECAR_NAME), b"{}").unwrap();
-        let inspection = inspect_package(&out2.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out2.join("release.3pk"), &library, &conn).unwrap();
         let knight = inspection
             .components
             .iter()
@@ -752,8 +802,139 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    fn owned_file(path: &str, dir: &str, size_bytes: i64, hash: &str) -> crate::catalog::FileRow {
+        crate::catalog::FileRow {
+            path: path.into(),
+            dir_path: dir.into(),
+            file_name: path.rsplit('/').next().unwrap().into(),
+            extension: "stl".into(),
+            size_bytes,
+            content_hash: Some(hash.into()),
+            ..Default::default()
+        }
+    }
+
+    /// The completeness diff is checksum-only and runs regardless of a
+    /// component's archive state: knight is fully owned under names the
+    /// manifest never uses, orc is partially owned including a
+    /// packed-at-rest donor's sidecar hash, and goblin is owned nowhere.
+    #[test]
+    fn completeness_diffs_manifest_checksums_against_library_wide_ownership() {
+        let mut conn = test_conn();
+        let dir = temp("completeness");
+        let staged = dir.join("staged");
+
+        let knight = staged.join("knight");
+        std::fs::create_dir_all(&knight).unwrap();
+        std::fs::write(knight.join("body.stl"), b"knight-body-bytes").unwrap();
+        std::fs::write(knight.join("base.stl"), b"knight-base-bytes").unwrap();
+        write_model_json(&knight, "knight", &["body.stl", "base.stl"]);
+
+        let orc = staged.join("orc");
+        std::fs::create_dir_all(&orc).unwrap();
+        std::fs::write(orc.join("orc_body.stl"), b"orc-body-bytes").unwrap();
+        std::fs::write(orc.join("orc_head.stl"), b"orc-head-bytes").unwrap();
+        write_model_json(&orc, "orc", &["orc_body.stl", "orc_head.stl"]);
+
+        let goblin = staged.join("goblin");
+        std::fs::create_dir_all(&goblin).unwrap();
+        std::fs::write(goblin.join("gob.stl"), b"goblin-bytes").unwrap();
+        write_model_json(&goblin, "goblin", &["gob.stl"]);
+
+        write_release_json(&staged);
+        let out = dir.join("packed");
+        let manifest = pack(&staged, &["knight", "orc", "goblin"], &out);
+        let checksum = |component: &str, file: &str| -> String {
+            manifest
+                .components
+                .iter()
+                .find(|c| c.name == component)
+                .unwrap()
+                .models[0]
+                .files
+                .iter()
+                .find(|f| f.name == file)
+                .unwrap()
+                .checksum
+                .clone()
+        };
+        let file_size = |component: &str, file: &str| -> f64 {
+            manifest
+                .components
+                .iter()
+                .find(|c| c.name == component)
+                .unwrap()
+                .models[0]
+                .files
+                .iter()
+                .find(|f| f.name == file)
+                .unwrap()
+                .size_bytes as f64
+        };
+
+        // knight's two files sit somewhere else entirely, under different
+        // names — checksum is identity, names aren't.
+        let knight_body = pack::bare_hash(&checksum("knight", "body.stl")).to_string();
+        let knight_base = pack::bare_hash(&checksum("knight", "base.stl")).to_string();
+        // orc_body is owned only as a packed model's sidecar-hashed entry —
+        // no unpack needed to match it; orc_head is owned nowhere.
+        let orc_body = pack::bare_hash(&checksum("orc", "orc_body.stl")).to_string();
+        let mut orc_donor = owned_file(
+            "/library/vault/orc_body_twin.stl",
+            "/library/vault",
+            17,
+            &orc_body,
+        );
+        orc_donor.archive_path = Some("/library/vault/model.plinthpack".into());
+
+        let rows = vec![
+            owned_file(
+                "/library/scattered/renamed_body.stl",
+                "/library/scattered",
+                17,
+                &knight_body,
+            ),
+            owned_file(
+                "/library/other/an_old_download.stl",
+                "/library/other",
+                17,
+                &knight_base,
+            ),
+            orc_donor,
+        ];
+        db::replace_catalog(&mut conn, "/library", &rows, &[], &[], &[], &[]).unwrap();
+
+        let inspection = inspect_package(&out.join("release.3pk"), &dir.join("dest"), &conn).unwrap();
+        let component = |name: &str| {
+            inspection
+                .components
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap()
+        };
+
+        let knight = component("knight");
+        assert_eq!(knight.files_owned, 2);
+        assert_eq!(knight.missing_bytes, 0.0);
+        assert!(knight.missing.is_empty());
+
+        let orc = component("orc");
+        assert_eq!(orc.files_owned, 1);
+        assert_eq!(orc.missing.len(), 1);
+        assert_eq!(orc.missing[0].name, "orc_head.stl");
+        assert_eq!(orc.missing_bytes, file_size("orc", "orc_head.stl"));
+
+        let goblin = component("goblin");
+        assert_eq!(goblin.files_owned, 0);
+        assert_eq!(goblin.missing.len(), 1);
+        assert_eq!(goblin.missing_bytes, file_size("goblin", "gob.stl"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn update_replaces_selected_components_and_preserves_local_edits() {
+        let conn = test_conn();
         let dir = temp("update");
         let staged = dir.join("staged");
         let knight = staged.join("knight");
@@ -825,7 +1006,7 @@ mod tests {
         );
 
         // The written manifest reflects the disk: everything reads unchanged now
-        let inspection = inspect_package(&out2.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out2.join("release.3pk"), &library, &conn).unwrap();
         assert!(inspection
             .components
             .iter()
@@ -836,6 +1017,7 @@ mod tests {
 
     #[test]
     fn a_failed_component_update_stays_marked_changed() {
+        let conn = test_conn();
         let dir = temp("failedupdate");
         let staged = dir.join("staged");
         let knight = staged.join("knight");
@@ -864,7 +1046,7 @@ mod tests {
             std::fs::read(release_dir.join("knight/body.stl")).unwrap(),
             b"body-v1"
         );
-        let inspection = inspect_package(&out2.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out2.join("release.3pk"), &library, &conn).unwrap();
         assert_eq!(inspection.components[0].state, ComponentState::Changed);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -876,6 +1058,7 @@ mod tests {
     /// never meant to touch.
     #[test]
     fn refuses_a_malicious_component_archive_path() {
+        let conn = test_conn();
         let dir = temp("evilarchive");
         let out = dir.join("out");
         std::fs::create_dir_all(&out).unwrap();
@@ -915,7 +1098,7 @@ mod tests {
         let library = dir.join("library");
         std::fs::create_dir_all(&library).unwrap();
 
-        let inspection = inspect_package(&out.join("release.3pk"), &library).unwrap();
+        let inspection = inspect_package(&out.join("release.3pk"), &library, &conn).unwrap();
         assert_eq!(
             inspection.components[0].state,
             ComponentState::MissingArchive
