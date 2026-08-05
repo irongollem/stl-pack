@@ -780,6 +780,40 @@
       <div class="flex flex-col gap-1.5">
         <span
           class="font-mono font-semibold text-[10px] tracking-widest text-base-content/40"
+          >CREATOR SIGNING KEY</span
+        >
+        <div
+          class="flex items-center gap-2.5 bg-base-200 border border-base-content/10 rounded-lg px-2.5 py-1.5"
+        >
+          <span
+            class="font-mono text-[12px] text-base-content/60 flex-1 truncate"
+          >
+            {{
+              signingKey
+                ? formatFingerprint(signingKey.key_fingerprint)
+                : "Setting up…"
+            }}
+          </span>
+          <button
+            type="button"
+            class="btn btn-xs"
+            :disabled="!signingKey"
+            @click="copyFingerprint"
+          >
+            {{ fingerprintCopied ? "Copied" : "Copy" }}
+          </button>
+        </div>
+        <p class="text-[10.5px] text-base-content/40">
+          Every release you pack is signed with this key when it's present —
+          customers can verify a release really came from you. Publish the
+          fingerprint on your MMF/Patreon/store page so they have something to
+          compare it against.
+        </p>
+      </div>
+
+      <div class="flex flex-col gap-1.5">
+        <span
+          class="font-mono font-semibold text-[10px] tracking-widest text-base-content/40"
           >APPEARANCE</span
         >
         <div
@@ -821,6 +855,7 @@ import {
   type IgnoredFolder,
   type NsfwAccessState,
   type Settings,
+  type SigningKeyInfo,
   commands,
 } from "../bindings.ts";
 import FileSelect from "../components/FileSelect.vue";
@@ -828,6 +863,7 @@ import { useBlenderProvision } from "../composables/useBlenderProvision";
 import { useFileSelect } from "../composables/useFileSelect";
 import { useThemeStore } from "../stores/themeStore";
 import { useToastStore } from "../stores/toastStore";
+import { formatFingerprint } from "../utils/format";
 
 const toastStore = useToastStore();
 const { selectFiles, selectDirectory } = useFileSelect();
@@ -966,6 +1002,34 @@ const browseLicence = async () => {
   });
   if (files?.length) {
     settings.value.licence_path = files[0].path;
+  }
+};
+
+// ensure_signing_key creates the keypair the first time this loads and just
+// hands it back on every load after — the release builder signs with it
+// silently whenever it's present, no separate toggle here.
+const signingKey = ref<SigningKeyInfo | null>(null);
+const fingerprintCopied = ref(false);
+const loadSigningKey = async () => {
+  const result = await commands.ensureSigningKey();
+  if (result.status === "ok") {
+    signingKey.value = result.data;
+  } else {
+    toastStore.reportError("Failed to set up your signing key", result.error);
+  }
+};
+const copyFingerprint = async () => {
+  if (!signingKey.value) return;
+  try {
+    await navigator.clipboard.writeText(
+      formatFingerprint(signingKey.value.key_fingerprint),
+    );
+    fingerprintCopied.value = true;
+    setTimeout(() => {
+      fingerprintCopied.value = false;
+    }, 1500);
+  } catch (error) {
+    toastStore.reportError("Failed to copy the fingerprint", error);
   }
 };
 
@@ -1292,6 +1356,7 @@ onActivated(() => {
 
 onMounted(async () => {
   loadIgnoredFolders();
+  loadSigningKey();
   await syncNsfwAccess();
   loadNsfwDesigners();
   try {

@@ -24,6 +24,10 @@ export const formatTime = (seconds: number) => {
   return `${mins}m ${secs}s`;
 };
 
+/** Group a hex fingerprint into fours for humans, e.g. "ab12cd34" -> "ab12 cd34". */
+export const formatFingerprint = (fingerprint: string) =>
+  fingerprint.match(/.{1,4}/g)?.join(" ") ?? fingerprint;
+
 /**
  * Normalize anything a Result/exception can carry into a readable string —
  * AppError values arrive as one-key objects like { IoError: "..." } and

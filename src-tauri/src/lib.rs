@@ -10,6 +10,7 @@ mod models;
 mod process;
 mod render;
 mod settings;
+mod signing;
 
 use basecutter::commands::{cancel_base_cut, export_cuts_to_catalog, repair_plinth_base_exports, start_base_cut};
 use basecutter::cutters::{get_cutter_library, get_plinth_defaults};
@@ -100,6 +101,7 @@ fn create_specta_builder() -> Builder {
             load_release_draft,
             settings::get_settings,
             settings::set_settings,
+            signing::ensure_signing_key,
             get_nsfw_access_state,
             unlock_nsfw,
             lock_nsfw,

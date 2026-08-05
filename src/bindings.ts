@@ -153,6 +153,18 @@ async setSettings(settings: Settings) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Get-or-create the creator's signing key and hand back what Settings can
+ * display and publish — the "generate on demand" entry point (#6).
+ */
+async ensureSigningKey() : Promise<Result<SigningKeyInfo, AppError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ensure_signing_key") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getNsfwAccessState() : Promise<Result<NsfwAccessState, AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_nsfw_access_state") };
@@ -2475,6 +2487,11 @@ scatter_library_dir?: string | null;
  * store has no such key.
  */
 edge_stats_max_tris?: number | null }
+/**
+ * What Settings shows once a key exists — enough to publish the
+ * fingerprint elsewhere; never the private key.
+ */
+export type SigningKeyInfo = { public_key: string; key_fingerprint: string }
 export type StartedStatus = { job_id: string; total_files: number; total_size_kb: number }
 /**
  * A model as the release builder stages it and `model.json` records it.
